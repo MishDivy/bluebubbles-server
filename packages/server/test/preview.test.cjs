@@ -92,7 +92,7 @@ test("ad-hoc signing preserves runtime entitlements without requesting a timesta
     assert.equal(options.identity, "-");
     assert.equal(options.identityValidation, false);
     assert.deepEqual(options.optionsForFile("fixture"), {
-        hardenedRuntime: true, entitlements: "/fixture/entitlements.plist", timestamp: false
+        hardenedRuntime: true, entitlements: "/fixture/entitlements.plist", timestamp: "none"
     });
 });
 

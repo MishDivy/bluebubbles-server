@@ -15,7 +15,8 @@ function previewSigningOptions(options) {
         ...options,
         identity: "-",
         identityValidation: false,
-        optionsForFile: file => ({ ...options.optionsForFile?.(file), timestamp: false })
+        // The pinned signer uses "none" to emit codesign --timestamp=none.
+        optionsForFile: file => ({ ...options.optionsForFile?.(file), timestamp: "none" })
     };
 }
 
