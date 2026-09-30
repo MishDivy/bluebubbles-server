@@ -1,0 +1,65 @@
+name: Build macOS reaction preview
+
+on:
+    push:
+        branches: [feature/custom-reactions]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    preview:
+        if: github.repository == 'MishDivy/bluebubbles-server'
+        runs-on: macos-15
+        timeout-minutes: 40
+        env:
+            CI: "false"
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  persist-credentials: false
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  repository: MishDivy/bluebubbles-helper
+                  ref: 0a9072f1172bc46f1a33a2bc58b8df05cd8e81ef
+                  path: helper-source
+                  persist-credentials: false
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+              with:
+                  node-version: "20.11"
+            - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+              with:
+                  python-version: "3.11"
+            - name: Verify build architecture
+              run: test "$(uname -m)" = arm64
+            - name: Install locked build dependencies without package scripts
+              run: npm ci --ignore-scripts --no-audit --no-fund
+            - name: Install pinned Electron and rebuild native dependencies
+              run: |
+                  node node_modules/electron/install.js
+                  node_modules/.bin/electron-rebuild --force --version 25.9.8 --arch arm64 --module-dir packages/server --only better-sqlite3,node-mac-contacts,node-mac-permissions
+            - name: Check source and preview packaging
+              run: |
+                  node --test packages/server/test/*.test.cjs
+                  node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json
+            - name: Build reviewed Messages helper
+              working-directory: helper-source
+              run: |
+                  ./scripts/test-compatibility.sh
+                  ./scripts/build-messages.sh
+            - name: Build UI and server
+              run: |
+                  npm run build --workspace=@bluebubbles/ui
+                  npm run build --workspace=@bluebubbles/server
+            - name: Package and verify a separate preview app
+              run: node packages/server/scripts/build-preview.cjs "$GITHUB_WORKSPACE/helper-source"
+            - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+              with:
+                  name: bluebubbles-preview-macos-arm64
+                  path: |
+                      packages/server/preview-artifacts/BlueBubbles-Preview-arm64.zip
+                      packages/server/preview-artifacts/manifest.json
+                      packages/server/preview-artifacts/SHA256SUMS
+                  if-no-files-found: error
+                  retention-days: 14

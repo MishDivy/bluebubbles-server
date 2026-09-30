@@ -18,6 +18,6 @@ jobs:
                   node-version: "20.11"
             # Native macOS modules are installed only for static checks and are never executed.
             - run: npm ci --force --ignore-scripts --no-audit --no-fund
-            - run: node --test packages/server/test/reactions.test.cjs
+            - run: node --test packages/server/test/*.test.cjs
             - run: node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json
             - run: npm run build --workspace=@bluebubbles/server

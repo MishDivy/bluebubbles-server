@@ -9,3 +9,4 @@ release/
 .swiftpm
 .yarn
 .yarnrc*
+packages/server/preview-artifacts/

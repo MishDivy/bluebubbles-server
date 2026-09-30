@@ -5,6 +5,7 @@ import { SERVER_UPDATE } from "@server/events";
 import { ScheduledService } from "@server/lib/ScheduledService";
 import { Loggable } from "@server/lib/logging/Loggable";
 import axios, { AxiosResponse } from "axios";
+import { isPreviewBuild } from "@server/preview";
 
 export class UpdateService extends Loggable {
     tag = "UpdateService";
@@ -36,6 +37,7 @@ export class UpdateService extends Loggable {
     }
 
     start() {
+        if (isPreviewBuild) return;
         if (this.timer) return;
         this.timer = new ScheduledService(async () => {
             if (this.hasUpdate) return;
@@ -52,6 +54,7 @@ export class UpdateService extends Loggable {
     }
 
     async checkForUpdate({ showNoUpdateDialog = false, showUpdateDialog = true } = {}): Promise<boolean> {
+        if (isPreviewBuild) return false;
         let releasesRes: AxiosResponse<any, any>;
 
         try {

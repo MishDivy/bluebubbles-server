@@ -10,6 +10,7 @@ import { isEmpty, isTruthyBool } from "@server/helpers/utils";
 import { BadRequest } from "../responses/errors";
 import { autoUpdater } from "electron-updater";
 import { SERVER_UPDATE_DOWNLOADING } from "@server/events";
+import { isPreviewBuild } from "@server/preview";
 
 export class ServerRouter {
     static async getInfo(ctx: RouterContext, _: Next) {
@@ -21,6 +22,7 @@ export class ServerRouter {
     }
 
     static async installUpdate(ctx: RouterContext, _: Next) {
+        if (isPreviewBuild) throw new BadRequest({ message: "Updates are disabled for this preview build." });
         const waitParam = (ctx.request.query?.wait ?? "false") as string;
         const wait = isTruthyBool(waitParam);
 

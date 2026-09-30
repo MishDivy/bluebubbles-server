@@ -71,6 +71,7 @@ import { MessagePoller } from "./databases/imessage/pollers/MessagePoller";
 import { obfuscatedHandle } from "./utils/StringUtils";
 import { AutoStartMethods } from "./databases/server/constants";
 import { MacOsInterface } from "./api/interfaces/macosInterface";
+import { isPreviewBuild } from "./preview";
 
 const findProcess = require("find-process");
 
@@ -83,7 +84,9 @@ ServerLog.transports.file.format = logFormat;
 
 // Patch in the original package path so we don't use @bluebubbles/server
 ServerLog.transports.file.resolvePath = () =>
-    path.join(os.homedir(), "Library", "Logs", "bluebubbles-server", "main.log");
+    isPreviewBuild
+        ? path.join(os.homedir(), "Library", "Logs", "divy-mac-utils", "bluebubbles-preview", "main.log")
+        : path.join(os.homedir(), "Library", "Logs", "bluebubbles-server", "main.log");
 
 /**
  * Create a singleton for the server so that it can be referenced everywhere.
