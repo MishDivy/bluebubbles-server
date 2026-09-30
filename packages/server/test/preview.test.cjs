@@ -4,7 +4,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const ts = require("typescript");
 const { startPreview } = require("../scripts/preview-bootstrap.cjs");
-const { previewConfig, helperRevision } = require("../scripts/build-preview.cjs");
+const { previewConfig, previewSigningOptions, helperRevision } = require("../scripts/build-preview.cjs");
 
 test("packaging uses a distinct app, pinned helper and a newly generated archive", () => {
     const config = previewConfig({
@@ -83,6 +83,17 @@ test("bootstrap selects the existing private clone before any server module load
         if (previous === undefined) delete process.env.BLUEBUBBLES_PREVIEW;
         else process.env.BLUEBUBBLES_PREVIEW = previous;
     }
+});
+
+test("ad-hoc signing preserves runtime entitlements without requesting a timestamp authority", () => {
+    const options = previewSigningOptions({
+        optionsForFile: () => ({ hardenedRuntime: true, entitlements: "/fixture/entitlements.plist" })
+    });
+    assert.equal(options.identity, "-");
+    assert.equal(options.identityValidation, false);
+    assert.deepEqual(options.optionsForFile("fixture"), {
+        hardenedRuntime: true, entitlements: "/fixture/entitlements.plist", timestamp: false
+    });
 });
 
 function compile(relative, dependencies) {

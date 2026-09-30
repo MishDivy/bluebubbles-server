@@ -10,6 +10,15 @@ const productName = "BlueBubbles Preview";
 const bundleId = "com.mishdivy.bluebubbles-preview";
 const hash = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 
+function previewSigningOptions(options) {
+    return {
+        ...options,
+        identity: "-",
+        identityValidation: false,
+        optionsForFile: file => ({ ...options.optionsForFile?.(file), timestamp: false })
+    };
+}
+
 function previewConfig({ revision, helper, checksum, output }) {
     if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error("Require a complete source revision.");
     const base = require("./electron-builder-config.js");
@@ -43,8 +52,7 @@ function previewConfig({ revision, helper, checksum, output }) {
             publish: null,
             signIgnore: [...base.mac.signIgnore, "BlueBubblesHelper\\.dylib$"],
             // Sign only this newly built preview; no vendor bundle or certificate is used.
-            sign: options =>
-                require("@electron/osx-sign").signAsync({ ...options, identity: "-", identityValidation: false })
+            sign: options => require("@electron/osx-sign").signAsync(previewSigningOptions(options))
         }
     };
 }
@@ -134,7 +142,7 @@ async function buildPreview(helperRoot) {
     console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { previewConfig, helperRevision };
+module.exports = { previewConfig, previewSigningOptions, helperRevision };
 if (require.main === module)
     buildPreview(process.argv[2]).catch(error => {
         console.error(error.message);
