@@ -20,6 +20,9 @@ test("packaging uses a distinct app, pinned helper and a newly generated archive
     assert.equal(config.extraMetadata.version, "1.9.9-preview.aaaaaaa");
     assert.equal(config.asar, true);
     assert.equal(config.mac.publish, null);
+    assert.equal(path.isAbsolute(config.mac.entitlements), true);
+    assert.equal(fs.existsSync(config.mac.entitlements), true);
+    assert.equal(config.mac.entitlementsInherit, config.mac.entitlements);
     assert.equal(config.mac.target[0].arch[0], "arm64");
     assert.equal(config.extraResources[1].from, "/fixture/helper");
     assert.match(helperRevision, /^[a-f0-9]{40}$/);

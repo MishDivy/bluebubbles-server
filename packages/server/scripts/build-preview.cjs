@@ -37,6 +37,8 @@ function previewConfig({ revision, helper, checksum, output }) {
         ],
         mac: {
             ...base.mac,
+            entitlements: path.join(__dirname, "entitlements.mac.plist"),
+            entitlementsInherit: path.join(__dirname, "entitlements.mac.plist"),
             target: [{ target: "dir", arch: ["arm64"] }],
             publish: null,
             signIgnore: [...base.mac.signIgnore, "BlueBubblesHelper\\.dylib$"],
