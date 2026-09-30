@@ -6,6 +6,7 @@ export type ServerMetadataResponse = {
     server_version: string;
     private_api: boolean;
     helper_connected: boolean;
+    privateApiCapabilities: { customEmojiReactions: boolean; stickerReactions: boolean };
     proxy_service: string;
     detected_icloud: string;
     detected_imessage: string;
@@ -59,6 +60,7 @@ export type MessageResponse = {
     balloonBundleId: string | null;
     associatedMessageGuid: string | null;
     associatedMessageType: string | null;
+    associatedMessageEmoji?: string | null;
     expressiveSendStyleId: string | null;
     timeExpressiveSendPlayed?: number | null;
     replyToGuid?: string | null;

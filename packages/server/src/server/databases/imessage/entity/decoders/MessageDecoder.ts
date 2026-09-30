@@ -4,6 +4,7 @@ import { Attachment } from "../Attachment";
 import { Chat } from "../Chat";
 import { Handle } from "../Handle";
 import { Message } from "../Message";
+import { MessageTypeTransformer } from "@server/databases/transformers/MessageTypeTransformer";
 
 export class MessageDecoder {
     messageCache: Map<number, Message> = new Map();
@@ -70,7 +71,8 @@ export class MessageDecoder {
             message.messageActionType = entry.message_message_action_type;
             message.messageSource = entry.message_message_source;
             message.associatedMessageGuid = entry.message_associated_message_guid;
-            message.associatedMessageType = entry.message_associated_message_type;
+            message.associatedMessageType = MessageTypeTransformer.from(entry.message_associated_message_type);
+            message.associatedMessageEmoji = entry.message_associated_message_emoji ?? null;
             message.balloonBundleId = entry.message_balloon_bundle_id;
             message.payloadData = convertAttributedBody(entry.message_payload_data);
             message.expressiveSendStyleId = entry.message_expressive_send_style_id;

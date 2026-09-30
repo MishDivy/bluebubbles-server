@@ -4,7 +4,7 @@ import {
     TransactionType
 } from "@server/managers/transactionManager/transactionPromise";
 import { PrivateApiAction } from ".";
-import type { ValidTapback, ValidRemoveTapback } from "@server/types";
+import { requireReaction, requireReactionCapability } from "@server/api/reactions";
 import { isMinCatalina, isMinMonterey } from "@server/env";
 
 export class PrivateApiMessage extends PrivateApiAction {
@@ -75,11 +75,13 @@ export class PrivateApiMessage extends PrivateApiAction {
     async react(
         chatGuid: string,
         selectedMessageGuid: string,
-        reactionType: ValidTapback | ValidRemoveTapback,
+        reactionType: string,
         partIndex?: number
     ): Promise<TransactionResult> {
         const action = "send-reaction";
         this.throwForNoMissingFields(action, [chatGuid, selectedMessageGuid, reactionType]);
+        const reaction = requireReaction(reactionType);
+        requireReactionCapability(reaction, this.api.capabilities.customEmojiReactions);
 
         const request = new TransactionPromise(TransactionType.MESSAGE);
         return this.sendApiMessage(
@@ -87,7 +89,7 @@ export class PrivateApiMessage extends PrivateApiAction {
             {
                 chatGuid,
                 selectedMessageGuid,
-                reactionType,
+                ...reaction,
                 partIndex: partIndex ?? 0
             },
             request

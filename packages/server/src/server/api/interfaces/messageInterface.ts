@@ -22,22 +22,16 @@ import type {
 import { Chat } from "@server/databases/imessage/entity/Chat";
 import path from "path";
 import { DBWhereItem } from "@server/databases/imessage/types";
+import type { TransactionResult } from "@server/managers/transactionManager/transactionPromise";
+import {
+    classicReactions,
+    requireReaction,
+    requireReactionCapability,
+    matchesEmojiReaction
+} from "@server/api/reactions";
 
 export class MessageInterface {
-    static possibleReactions: string[] = [
-        "love",
-        "like",
-        "dislike",
-        "laugh",
-        "emphasize",
-        "question",
-        "-love",
-        "-like",
-        "-dislike",
-        "-laugh",
-        "-emphasize",
-        "-question"
-    ];
+    static possibleReactions: string[] = classicReactions;
 
     /**
      * Sends a message by executing the sendMessage AppleScript
@@ -396,6 +390,15 @@ export class MessageInterface {
 
         // Rebuild the selected message text to make it what the reaction text
         // would be in the database
+        const parsedReaction = requireReaction(reaction);
+        requireReactionCapability(parsedReaction, Server().privateApi.capabilities.customEmojiReactions);
+        if (!Number.isInteger(partIndex) || partIndex < 0) throw new Error("Invalid message part index.");
+        if (parsedReaction.reactionEmoji) {
+            const selected = await Server().iMessageRepo.getMessage(message.guid, true, false);
+            if (!selected?.chats?.some(chat => chat.guid === chatGuid)) {
+                throw new Error("Selected message does not belong to the requested chat.");
+            }
+        }
         const prefix = (reaction as string).startsWith("-")
             ? negativeReactionTextMap[reaction as string]
             : reactionTextMap[reaction as string];
@@ -446,16 +449,36 @@ export class MessageInterface {
         }
 
         // Build the final message to match on
-        const messageText = `${prefix} ${msg}`;
+        const messageText = parsedReaction.reactionEmoji ? "" : `${prefix} ${msg}`;
 
         // We need offsets here due to iMessage's save times being a bit off for some reason
         const now = new Date(new Date().getTime() - 10000).getTime(); // With 10 second offset
-        const awaiter = new MessagePromise({ chatGuid, text: messageText, isAttachment: false, sentAt: now, tempGuid });
+        const awaiter = new MessagePromise({
+            chatGuid,
+            text: messageText,
+            isAttachment: false,
+            sentAt: now,
+            tempGuid,
+            emojiReaction: parsedReaction.reactionEmoji
+                ? {
+                      targetGuid: message.guid,
+                      partIndex,
+                      reaction: parsedReaction
+                  }
+                : undefined
+        });
         Server().messageManager.add(awaiter);
 
         // Send the reaction
-        const result = await Server().privateApi.message.react(chatGuid, message.guid, reaction, partIndex ?? 0);
+        let result: TransactionResult;
+        try {
+            result = await Server().privateApi.message.react(chatGuid, message.guid, reaction, partIndex ?? 0);
+        } catch (error) {
+            if (parsedReaction.reactionEmoji) await awaiter.reject("Emoji reaction was not confirmed.");
+            throw error;
+        }
         if (!result?.identifier) {
+            if (parsedReaction.reactionEmoji) await awaiter.reject("Emoji reaction was not confirmed.");
             throw new Error("Failed to send reaction! No message GUID returned.");
         } else {
             Server().log(`Reaction sent with Message GUID: ${result.identifier}`, "debug");
@@ -465,7 +488,18 @@ export class MessageInterface {
         let retMessage = await resultAwaiter({
             maxWaitMs,
             getData: async _ => {
-                return await Server().iMessageRepo.getMessage(result.identifier, true, false);
+                const sent = await Server().iMessageRepo.getMessage(result.identifier, true, false);
+                // A helper identifier can reflect lastSentMessage; never confirm an unrelated or stale GUID.
+                if (parsedReaction.reactionEmoji) {
+                    if (
+                        !matchesEmojiReaction(sent, message.guid, partIndex, parsedReaction) ||
+                        !sent?.chats?.some(chat => chat.guid === chatGuid) ||
+                        sent.dateCreated.getTime() < now
+                    ) {
+                        return null;
+                    }
+                }
+                return sent;
             }
         });
 
@@ -608,7 +642,7 @@ export class MessageInterface {
         matchType?: "contains" | "exact"
     }): Promise<[Message[], number]> {
         checkPrivateApiStatus();
-        
+
         const result = await Server().privateApi.message.search(query, matchType);
         if (result?.data?.error) {
             throw new Error(`Failed to search messages: ${result.data.error}`);

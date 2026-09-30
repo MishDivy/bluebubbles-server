@@ -26,6 +26,7 @@ import { ActionHandler } from "@server/api/apple/actions";
 import { QueueItem } from "@server/services/queueService";
 import { GeneralInterface } from "@server/api/interfaces/generalInterface";
 import { MessageInterface } from "@server/api/interfaces/messageInterface";
+import { parseReaction } from "@server/api/reactions";
 import { convertAudio } from "@server/databases/imessage/helpers/utils";
 
 import {
@@ -873,24 +874,11 @@ export class SocketRoutes {
                 return response(cb, "error", createBadRequestResponse("No message provided!"));
             if (!params?.actionMessageGuid || !params?.actionMessageText)
                 return response(cb, "error", createBadRequestResponse("No action message provided!"));
-            if (
-                !params?.tapback ||
-                ![
-                    "love",
-                    "like",
-                    "dislike",
-                    "laugh",
-                    "emphasize",
-                    "question",
-                    "-love",
-                    "-like",
-                    "-dislike",
-                    "-laugh",
-                    "-emphasize",
-                    "-question"
-                ].includes(params.tapback)
-            )
+            if (!parseReaction(params?.tapback))
                 return response(cb, "error", createBadRequestResponse("Invalid tapback descriptor provided!"));
+
+            if (params?.partIndex != null && (!Number.isInteger(params.partIndex) || params.partIndex < 0))
+                return response(cb, "error", createBadRequestResponse("Invalid message part index provided!"));
 
             // Fetch the message we are reacting to
             const message = await Server().iMessageRepo.getMessage(params.actionMessageGuid, false, true);
@@ -905,7 +893,8 @@ export class SocketRoutes {
                         chatGuid: params.chatGuid,
                         message,
                         reaction: params.tapback,
-                        tempGuid
+                        tempGuid,
+                        partIndex: params.partIndex ?? 0
                     });
 
                     return response(

@@ -1,0 +1,23 @@
+name: Custom reactions checks
+
+on:
+    pull_request:
+    push:
+        branches: [feature/custom-reactions]
+
+permissions:
+    contents: read
+
+jobs:
+    server:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+            - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+              with:
+                  node-version: "20.11"
+            # Native macOS modules are installed only for static checks and are never executed.
+            - run: npm ci --force --ignore-scripts --no-audit --no-fund
+            - run: node --test packages/server/test/reactions.test.cjs
+            - run: node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json
+            - run: npm run build --workspace=@bluebubbles/server

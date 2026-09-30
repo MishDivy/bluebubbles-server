@@ -101,6 +101,7 @@ export class AttachmentSerializer {
             guid: attachment.guid,
             uti: attachment.uti,
             mimeType: attachment.mimeType,
+            isSticker: attachment.isSticker,
             transferName: attachment.transferName,
             totalBytes: attachment.totalBytes
         };
@@ -112,7 +113,6 @@ export class AttachmentSerializer {
                     transferState: attachment.transferState,
                     isOutgoing: attachment.isOutgoing,
                     hideAttachment: attachment.hideAttachment,
-                    isSticker: attachment.isSticker,
                     originalGuid: attachment.originalGuid,
                     hasLivePhoto: !!AttachmentInterface.getLivePhotoPath(attachment)
                 }

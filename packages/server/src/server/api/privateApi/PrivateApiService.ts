@@ -57,6 +57,18 @@ export class PrivateApiService extends Loggable {
         return this.clients.length > 0;
     }
 
+    get capabilities(): { customEmojiReactions: boolean; stickerReactions: boolean } {
+        const messages = this.activeClients["com.apple.MobileSMS"];
+        return {
+            customEmojiReactions:
+                !!messages &&
+                !messages.destroyed &&
+                this.clients.includes(messages) &&
+                messages.capabilities?.customEmojiReactions === true,
+            stickerReactions: false
+        };
+    }
+
     get message(): PrivateApiMessage {
         return new PrivateApiMessage(this);
     }
@@ -146,7 +158,8 @@ export class PrivateApiService extends Loggable {
         return null;
     }
 
-    registerClient(process: string, socket: Socket) {
+    registerClient(process: string, socket: Socket, capabilities?: Record<string, unknown>) {
+        socket.capabilities = { customEmojiReactions: capabilities?.customEmojiReactions === true };
         this.activeClients[process] = socket;
         this.emit("client-registered", { process, socket });
     }
@@ -240,7 +253,7 @@ export class PrivateApiService extends Loggable {
             try {
                 data = JSON.parse(event);
             } catch (e) {
-                this.log.info(`Failed to decode BlueBubblesHelper data! ${event}, ${e}`);
+                this.log.info("Failed to decode BlueBubblesHelper data: invalid JSON.");
                 return;
             }
 
@@ -322,8 +335,13 @@ export class PrivateApiService extends Loggable {
                     d.transactionId = transaction.transactionId;
                 }
 
-                // For each ocket client, write data
-                this.writeToClients(`${JSON.stringify(d)}\n`).then(success => {
+                // Emoji requests must reach the helper that advertised this capability.
+                // Broadcasting could let an older helper reply with an unrelated success or error.
+                const isEmojiReaction = action === "send-reaction" && ["emoji", "-emoji"].includes(data.reactionType);
+                const write = isEmojiReaction
+                    ? this.writeEmojiReaction(`${JSON.stringify(d)}\n`)
+                    : this.writeToClients(`${JSON.stringify(d)}\n`);
+                write.then(success => {
                     if (success) return resolve();
                     reject();
                 });
@@ -359,6 +377,16 @@ export class PrivateApiService extends Loggable {
         return success;
     }
 
+    private async writeEmojiReaction(data: string): Promise<boolean> {
+        if (!this.capabilities.customEmojiReactions) return false;
+        try {
+            await this.writeToClient(this.activeClients["com.apple.MobileSMS"], data);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     private async writeToClient(client: net.Socket, data: string): Promise<void> {
         return new Promise((resolve, reject) => {
             client.write(data, (err: Error) => {
@@ -379,6 +407,7 @@ export class PrivateApiService extends Loggable {
         }
 
         this.clients = [];
+        this.activeClients = {};
     }
 
     async restart(): Promise<void> {

@@ -1,5 +1,4 @@
 import type { Message } from "@server/databases/imessage/entity/Message";
-import type { ValidRemoveTapback, ValidTapback } from "@server/types";
 import * as net from "net";
 
 export type SendMessageParams = {
@@ -68,7 +67,7 @@ export type SendAttachmentParams = {
 export type SendReactionParams = {
     chatGuid: string;
     message: Message;
-    reaction: ValidTapback | ValidRemoveTapback;
+    reaction: string;
     tempGuid?: string | null;
     partIndex?: number | null;
 };
@@ -87,4 +86,6 @@ export type SendMultipartTextParams = {
 
 export class Socket extends net.Socket {
     id: string;
+
+    capabilities?: { customEmojiReactions: boolean };
 }

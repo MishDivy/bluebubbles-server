@@ -3,6 +3,7 @@ import { Chat } from "@server/databases/imessage/entity/Chat";
 import { Message } from "@server/databases/imessage/entity/Message";
 import { getFilenameWithoutExtension, isEmpty, isNotEmpty, onlyAlphaNumeric } from "@server/helpers/utils";
 import { AttributedBodyUtils } from "@server/utils/AttributedBodyUtils";
+import { matchesEmojiReaction, Reaction } from "@server/api/reactions";
 
 export class MessagePromiseRejection extends Error {
     error: string;
@@ -45,7 +46,18 @@ export class MessagePromise {
 
     private tempGuid?: string | null;
 
-    constructor({ chatGuid, text, isAttachment, sentAt, subject, tempGuid }: MessagePromiseConstructorParameters) {
+    private emojiReaction?: MessagePromiseConstructorParameters["emojiReaction"];
+
+    constructor({
+        chatGuid,
+        text,
+        isAttachment,
+        sentAt,
+        subject,
+        tempGuid,
+        emojiReaction
+    }: MessagePromiseConstructorParameters) {
+        this.emojiReaction = emojiReaction;
         // Used to temporarily update the guid
         this.tempGuid = tempGuid;
 
@@ -141,6 +153,16 @@ export class MessagePromise {
             return false;
         }
 
+        // Emoji tapbacks cannot be matched by localized display text or by text with emoji stripped.
+        if (this.emojiReaction) {
+            const { targetGuid, partIndex, reaction } = this.emojiReaction;
+            return (
+                (message.chats ?? []).some(chat => this.isSameChatGuid(chat.guid)) &&
+                matchesEmojiReaction(message, targetGuid, partIndex, reaction) &&
+                this.sentAt <= message.dateCreated.getTime()
+            );
+        }
+
         // If this is an attachment, we need to match it slightly differently
         if (this.isAttachment) {
             // If this was supposed to be an attachment, but there are no attachments, there's no match
@@ -177,4 +199,5 @@ interface MessagePromiseConstructorParameters {
     sentAt: Date | number;
     subject?: string;
     tempGuid?: string;
+    emojiReaction?: { targetGuid: string; partIndex: number; reaction: Reaction };
 }

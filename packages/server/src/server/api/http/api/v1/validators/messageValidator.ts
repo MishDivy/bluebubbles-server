@@ -6,7 +6,7 @@ import fs from "fs";
 import { Server } from "@server";
 import { isEmpty } from "@server/helpers/utils";
 import { FileSystem } from "@server/fileSystem";
-import { MessageInterface } from "@server/api/interfaces/messageInterface";
+import { parseReaction } from "@server/api/reactions";
 
 import { ValidateInput } from "./index";
 import { BadRequest } from "../responses/errors";
@@ -167,12 +167,19 @@ export class MessageValidator {
     static sendReactionRules = {
         chatGuid: "required|string",
         selectedMessageGuid: "required|string",
-        reaction: `required|string|in:${MessageInterface.possibleReactions.join(",")}`,
+        reaction: "required|string",
         partIndex: "numeric|min:0"
     };
 
     static async validateReaction(ctx: RouterContext, next: Next) {
         ValidateInput(ctx.request?.body, MessageValidator.sendReactionRules);
+        if (!parseReaction(ctx.request?.body?.reaction)) {
+            throw new BadRequest({ error: "Reaction must be a classic tapback or a single emoji." });
+        }
+        const partIndex = ctx.request?.body?.partIndex;
+        if (partIndex != null && (!Number.isInteger(partIndex) || partIndex < 0)) {
+            throw new BadRequest({ error: "Invalid message part index." });
+        }
         await next();
     }
 
