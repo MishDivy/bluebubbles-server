@@ -8,7 +8,13 @@ node --test packages/server/test/*.test.cjs
 node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json
 ```
 
-Use Node 20 and npm 10. The upstream manifest's `devEngines` shape is rejected by newer npm; on Linux, `--force` permits installing the locked macOS-only packages for static checks. Installation scripts are disabled. The tests transpile actual server modules using the existing TypeScript dependency and replace external/native boundaries. They never open Messages, send messages, inject helpers or start Electron. The feature CI also builds the production webpack bundle, without packaging or publishing it.
+Use Node 20 and npm 10. The upstream manifest's `devEngines` shape is rejected by newer npm; on Linux, `--force` permits installing the locked macOS-only packages for static checks. Installation scripts are disabled. The tests transpile actual server modules using the existing TypeScript dependency and replace external/native boundaries. They never open Messages, send messages, inject helpers or start Electron. The checks workflow runs on `main`, `feature/custom-reactions` and pull requests. It also builds the production webpack bundle, without packaging or publishing it.
+
+## Fork production branch
+
+The owner's fork uses `main` as the source base for the custom production deployment. It starts from tested revision `f7045711ef1bf72e8a209b316830db2eef70574c`; the existing `master` history remains unchanged. Both checks and macOS artifact builds run on `main`. Promoting the branch does not activate a deployment or change the installed custom app's identity, paths or updater policy.
+
+The inherited `.github/workflows/main.yml` runs only on pushes to `master` and invokes the upstream publishing configuration. Keep it off `main`. The fork's macOS workflow has read-only repository permissions and uploads CI artifacts only; it does not publish tags or GitHub releases.
 
 ## API contract
 
@@ -26,7 +32,7 @@ The Sequoia column, emoji reaction code mapping and helper wire shape adapt Zach
 
 ## Separate macOS preview artifact
 
-The preview workflow runs only on the owner's fork and feature branch or by manual dispatch. It builds on an ARM64 `macos-15` runner with Node 20.11, Python 3.11 and the unchanged dependency lock. Package scripts are disabled during installation; the workflow explicitly downloads Electron 25.9.8 and rebuilds the three native modules for that Electron ABI. It tests and embeds helper revision `0a9072f1172bc46f1a33a2bc58b8df05cd8e81ef`, builds the existing UI, then packages a new `BlueBubbles Preview.app` with bundle ID `com.mishdivy.bluebubbles-preview` and version `1.9.9-preview.<server revision>`.
+The preview workflow runs only on the owner's fork, on `main` and `feature/custom-reactions` or by manual dispatch. It builds on an ARM64 `macos-15` runner with Node 20.11, Python 3.11 and the unchanged dependency lock. Package scripts are disabled during installation; the workflow explicitly downloads Electron 25.9.8 and rebuilds the three native modules for that Electron ABI. It tests and embeds helper revision `0a9072f1172bc46f1a33a2bc58b8df05cd8e81ef`, builds the existing UI, then packages a new `BlueBubbles Preview.app` with bundle ID `com.mishdivy.bluebubbles-preview` and version `1.9.9-preview.<server revision>`.
 
 The builder generates the new ASAR integrity record and signs the new app ad hoc. The verified helper retains its build signature and bytes. The build verifies the full app signature, ASAR header integrity and embedded helper hash before creating a ZIP, checksums and a manifest with source revisions, code hashes and workflow provenance. These are CI artifacts, not a published release. The build does not copy, modify or re-sign the installed vendor app. An ad-hoc signature is not Developer ID signing or notarization; installation and privacy permissions remain separate host checks.
 

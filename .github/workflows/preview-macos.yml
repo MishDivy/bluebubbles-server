@@ -2,7 +2,7 @@ name: Build macOS reaction preview
 
 on:
     push:
-        branches: [feature/custom-reactions]
+        branches: [main, feature/custom-reactions]
     workflow_dispatch:
 
 permissions:
