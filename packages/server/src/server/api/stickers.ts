@@ -226,7 +226,6 @@ export function matchesSentSticker(message: any, guid: string, chatGuid: string,
         !message.associatedMessageGuid &&
         message.attachments?.length === 1 &&
         attachment.isSticker === true &&
-        attachment.isOutgoing === true &&
         !!attachment.guid &&
         !!attachment.stickerUserInfo &&
         (attachment.stickerUserInfo.length > 0 ||

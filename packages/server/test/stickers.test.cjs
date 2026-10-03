@@ -307,6 +307,9 @@ test("confirmation requires exact outgoing sent row, chat and sticker metadata",
         attachments: [{ guid: "attachment", isSticker: true, isOutgoing: true, stickerUserInfo: Buffer.from([1]) }]
     };
     assert.equal(stickers.matchesSentSticker(row, "sent", "chat", Date.now() - 1000), true);
+    const synced = { ...row, attachments: [{ ...row.attachments[0], isOutgoing: false }] };
+    assert.equal(stickers.matchesSentSticker(synced, "sent", "chat", Date.now() - 1000), true);
+    assert.equal(stickers.matchesSentSticker({ ...synced, isFromMe: false }, "sent", "chat", Date.now() - 1000), false);
     for (const change of [
         { guid: "other" },
         { isFromMe: false },
