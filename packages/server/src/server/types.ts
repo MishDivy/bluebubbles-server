@@ -1,4 +1,6 @@
 import { NSAttributedString } from "node-typedstream";
+import type { StickerMetadata } from "@server/api/stickerMetadata";
+import type { StickerLayout } from "@server/api/stickers";
 
 export type ServerMetadataResponse = {
     computer_id: string;
@@ -35,6 +37,7 @@ export type MessageResponse = {
     guid: string;
     text: string;
     attributedBody?: NSAttributedString[];
+    stickerLayout?: StickerLayout;
     messageSummaryInfo?: NodeJS.Dict<any>[];
     handle?: HandleResponse | null;
     handleId: number;
@@ -128,7 +131,7 @@ export type AttachmentResponse = {
     isSticker?: boolean;
     hideAttachment?: boolean;
     originalGuid?: string;
-    metadata?: { [key: string]: string | boolean | number };
+    metadata?: { [key: string]: string | boolean | number | StickerMetadata };
     hasLivePhoto?: boolean;
 };
 

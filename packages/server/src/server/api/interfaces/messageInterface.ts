@@ -34,7 +34,9 @@ import {
     readStickerUpload,
     reserveStickerAttempt,
     hasStickerAttempt,
-    matchesSentSticker,
+    matchesSentStickerBatch,
+    parseStickerRowFields,
+    MAX_STICKER_ROW_BYTES,
     StickerUnconfirmedError
 } from "@server/api/stickers";
 
@@ -55,8 +57,23 @@ export class MessageInterface {
         attachmentPath: string;
     }): Promise<Message> {
         validateStickerFields({ chatGuid, tempGuid, name, ...(stickerLabel != null ? { stickerLabel } : {}) });
+        return MessageInterface.sendStickerBatch(chatGuid, tempGuid, [{ attachmentPath, name, stickerLabel }]);
+    }
+
+    static async sendStickerRow({ chatGuid, tempGuid, stickers }: {
+        chatGuid: string;
+        tempGuid: string;
+        stickers: { attachmentPath: string; name: string; stickerLabel?: string }[];
+    }): Promise<Message> {
+        parseStickerRowFields({ chatGuid, tempGuid, stickers: JSON.stringify(stickers.map(({ name, stickerLabel }) => ({ name, stickerLabel }))) });
+        return MessageInterface.sendStickerBatch(chatGuid, tempGuid, stickers);
+    }
+
+    private static async sendStickerBatch(chatGuid: string, tempGuid: string,
+        stickers: { attachmentPath: string; name: string; stickerLabel?: string }[]): Promise<Message> {
         checkPrivateApiStatus();
-        if (!Server().privateApi.capabilities.stickerSending)
+        const rowSend = stickers.length > 1;
+        if (!(rowSend ? Server().privateApi.capabilities.stickerRows : Server().privateApi.capabilities.stickerSending))
             throw new Error("Native sticker sending is not supported by the connected Messages helper.");
         const [chats] = await Server().iMessageRepo.getChats({
             chatGuid,
@@ -66,52 +83,61 @@ export class MessageInterface {
         if (chats.length !== 1 || chats[0].guid !== chatGuid || chats[0].serviceName !== "iMessage") {
             throw new Error("Native stickers require an existing iMessage chat.");
         }
-        const bytes = readStickerUpload(attachmentPath, name);
+        const sources = stickers.map(sticker => readStickerUpload(sticker.attachmentPath, sticker.name));
+        if (sources.reduce((total, bytes) => total + bytes.length, 0) > MAX_STICKER_ROW_BYTES) throw new Error("Sticker row exceeds 5 MiB.");
         if (Server().httpService.sendCache.find(tempGuid) || hasStickerAttempt(tempGuid))
             throw new Error("This temporary GUID is already queued.");
-        let filePath: string;
-        try {
-            filePath = FileSystem.copyAttachment(attachmentPath, name, "private-api");
-            if (fs.statSync(filePath).size !== bytes.length || !fs.readFileSync(filePath).equals(bytes)) {
-                throw new Error("Sticker staging changed during validation.");
+        const prepared: { filePath: string; filename: string; stickerLabel?: string }[] = [];
+        const cleanupPrepared = (confirmedMessage?: Message) => {
+            let referenced: Set<string>;
+            try {
+                referenced = new Set((confirmedMessage?.attachments ?? []).filter(attachment => typeof attachment.filePath === "string")
+                    .map(attachment => FileSystem.getRealPath(attachment.filePath)));
+            } catch {
+                return;
             }
-        } catch (error) {
-            if (filePath) {
-                try {
-                    fs.unlinkSync(filePath);
-                    fs.rmdirSync(path.dirname(filePath));
-                } catch {
-                    /* Preserve the validation error. */
+            for (const { filePath } of prepared) {
+                if (referenced.has(filePath)) continue;
+                try { fs.unlinkSync(filePath); fs.rmdirSync(path.dirname(filePath)); } catch { /* Preserve the preparation error. */ }
+            }
+        };
+        try {
+            for (let index = 0; index < stickers.length; index++) {
+                const sticker = stickers[index];
+                const filePath = FileSystem.copyAttachment(sticker.attachmentPath, sticker.name, "private-api");
+                prepared.push({ filePath, filename: sticker.name, stickerLabel: sticker.stickerLabel });
+                const bytes = sources[index];
+                if (fs.statSync(filePath).size !== bytes.length || !fs.readFileSync(filePath).equals(bytes)) {
+                    throw new Error("Sticker staging changed during validation.");
                 }
             }
+        } catch (error) {
+            cleanupPrepared();
             throw error;
         }
         try {
             reserveStickerAttempt(tempGuid);
         } catch (error) {
-            try {
-                fs.unlinkSync(filePath);
-                fs.rmdirSync(path.dirname(filePath));
-            } catch {
-                /* Preserve the duplicate error. */
-            }
+            cleanupPrepared();
             throw error;
         }
         Server().httpService.sendCache.add(tempGuid);
         const sentAt = Date.now() - 10000;
         let result: TransactionResult;
         try {
-            result = await Server().privateApi.attachment.sendSticker({
-                chatGuid,
-                filePath,
-                filename: name,
-                stickerLabel
-            });
+            result = rowSend
+                ? await Server().privateApi.attachment.sendStickerRow({ chatGuid, stickers: prepared })
+                : await Server().privateApi.attachment.sendSticker({ chatGuid, ...prepared[0] });
         } catch {
             throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
         }
         if (typeof result?.identifier !== "string" || !result.identifier) {
             throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+        }
+        const expectedGuids = rowSend ? result.data?.attachmentGuids : undefined;
+        if (rowSend && (!Array.isArray(expectedGuids) || expectedGuids.length !== stickers.length ||
+            new Set(expectedGuids).size !== stickers.length || expectedGuids.some(guid => typeof guid !== "string" || !guid))) {
+            throw new StickerUnconfirmedError("Sticker row send outcome is unknown. Check the chat before sending again.");
         }
         let message: Message;
         try {
@@ -119,15 +145,17 @@ export class MessageInterface {
                 maxWaitMs: 60000,
                 getData: async () => {
                     const row = await Server().iMessageRepo.getMessage(result.identifier, true, true);
-                    return matchesSentSticker(row, result.identifier, chatGuid, sentAt) ? row : null;
+                    return matchesSentStickerBatch(row, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids) ? row : null;
                 }
             });
         } catch {
             throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
         }
-        if (!matchesSentSticker(message, result.identifier, chatGuid, sentAt)) {
+        if (!matchesSentStickerBatch(message, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids)) {
             throw new StickerUnconfirmedError("Sticker send was not confirmed. Check the chat before sending again.");
         }
+        if (rowSend) message.verifiedStickerLayout = { attachmentGuids: [...expectedGuids], partIndex: 0 };
+        cleanupPrepared(message);
         return message;
     }
 

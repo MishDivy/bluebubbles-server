@@ -8,6 +8,7 @@ import { conditional } from "conditional-decorator";
 import * as mime from "mime-types";
 import { FileSystem } from "@server/fileSystem";
 import { AttributedBodyTransformer } from "@server/databases/transformers/AttributedBodyTransformer";
+import { StickerAttributionTransformer } from "@server/databases/transformers/StickerAttributionTransformer";
 
 @Entity("attachment")
 export class Attachment {
@@ -102,7 +103,7 @@ export class Attachment {
             type: "blob",
             name: "attribution_info",
             nullable: true,
-            transformer: AttributedBodyTransformer
+            transformer: StickerAttributionTransformer
         })
     )
     attributionInfo: NodeJS.Dict<any>[] | null;

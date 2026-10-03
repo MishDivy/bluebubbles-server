@@ -85,6 +85,7 @@ export const convertImage = async (
     } = {}
 ): Promise<string> => {
     if (!attachment) return null;
+    if (attachment.isSticker === true) return null;
     const newPath = getConversionPath(attachment, "jpeg");
     const mType = originalMimeType ?? attachment.getMimeType();
     let failed = false;

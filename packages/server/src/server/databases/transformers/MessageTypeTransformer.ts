@@ -10,13 +10,15 @@ export const ReactionIdToString: { [key: string]: string } = {
     2004: "emphasize",
     2005: "question",
     2006: "emoji",
+    2007: "sticker-reaction",
     3000: "-love",
     3001: "-like",
     3002: "-dislike",
     3003: "-laugh",
     3004: "-emphasize",
     3005: "-question",
-    3006: "-emoji"
+    3006: "-emoji",
+    3007: "-sticker-reaction"
 };
 
 export const ReactionStringToId: { [key: string]: number } = {
@@ -28,13 +30,15 @@ export const ReactionStringToId: { [key: string]: number } = {
     emphasize: 2004,
     question: 2005,
     emoji: 2006,
+    "sticker-reaction": 2007,
     "-love": 3000,
     "-like": 3001,
     "-dislike": 3002,
     "-laugh": 3003,
     "-emphasize": 3004,
     "-question": 3005,
-    "-emoji": 3006
+    "-emoji": 3006,
+    "-sticker-reaction": 3007
 };
 
 export const MessageTypeTransformer: ValueTransformer = {

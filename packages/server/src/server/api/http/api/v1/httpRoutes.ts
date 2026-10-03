@@ -446,6 +446,13 @@ export class HttpRoutes {
                     },
                     {
                         method: HttpMethod.POST,
+                        path: "send-sticker-row",
+                        middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
+                        validators: [MessageValidator.validateStickerRow],
+                        controller: MessageRouter.sendStickerRow
+                    },
+                    {
+                        method: HttpMethod.POST,
                         path: "multipart",
                         validators: [MessageValidator.validateMultipart],
                         controller: MessageRouter.sendMultipartMessage

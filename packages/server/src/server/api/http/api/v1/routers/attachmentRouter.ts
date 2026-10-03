@@ -58,7 +58,7 @@ export class AttachmentRouter {
         Server().log(`Attachment download request (MIME: ${mimeType}; GUID: ${g}; Original GUID: ${og})`, "debug");
 
         // If we want to resize the image, do so here
-        if (!useOriginal) {
+        if (!useOriginal && attachment.isSticker !== true) {
             const converters = [convertImage, convertAudio];
             for (const conversion of converters) {
                 // Try to convert the attachments using available converters

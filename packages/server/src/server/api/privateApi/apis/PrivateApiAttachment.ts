@@ -9,6 +9,15 @@ import { PrivateApiAction } from ".";
 export class PrivateApiAttachment extends PrivateApiAction {
     tag = "PrivateApiAttachment";
 
+    async sendStickerRow({ chatGuid, stickers }: { chatGuid: string; stickers: { filePath: string; filename?: string; stickerLabel?: string }[] }): Promise<TransactionResult> {
+        if (!this.api.capabilities.stickerRows) throw new Error("Native sticker rows are not supported by the connected Messages helper.");
+        if (!Array.isArray(stickers) || stickers.length < 2 || stickers.length > 10) throw new Error("A sticker row must contain 2 to 10 stickers.");
+        this.throwForNoMissingFields("send-sticker-row", [chatGuid, ...stickers.map(sticker => sticker.filePath)]);
+        return this.sendApiMessage("send-sticker-row", { chatGuid, stickers: stickers.map(({ filePath, filename, stickerLabel }) => ({
+            filePath, ...(filename != null ? { filename } : {}), ...(stickerLabel != null ? { stickerLabel } : {})
+        })) }, new TransactionPromise(TransactionType.ATTACHMENT));
+    }
+
     async sendSticker({
         chatGuid,
         filePath,

@@ -3,10 +3,19 @@ import os from "os";
 import path from "path";
 
 export const MAX_STICKER_BYTES = 500 * 1024;
+export const MAX_STICKER_ROW_BYTES = 5 * 1024 * 1024;
 export const stickerMultipartLimits = { maxFileSize: MAX_STICKER_BYTES, maxFieldsSize: 8192, multiples: true };
+export const stickerRowMultipartLimits = { ...stickerMultipartLimits, maxFileSize: MAX_STICKER_ROW_BYTES };
+
+export type StickerDescriptor = { name: string; stickerLabel?: string };
+export type StickerLayout = { attachmentGuids: string[]; partIndex: 0 };
 
 export function isStickerUploadRequest(method: string, pathname: string): boolean {
-    return method === "POST" && /^\/api\/v1\/message\/send-sticker\/?$/i.test(pathname);
+    return method === "POST" && /^\/api\/v1\/message\/send-sticker(?:-row)?\/?$/i.test(pathname);
+}
+
+export function isStickerRowUploadRequest(method: string, pathname: string): boolean {
+    return method === "POST" && /^\/api\/v1\/message\/send-sticker-row\/?$/i.test(pathname);
 }
 const MAX_DIMENSION = 618;
 const MAX_FRAMES = 100;
@@ -52,6 +61,25 @@ export function validateStickerFields(body: Record<string, unknown>) {
     ) {
         throw new Error("Sticker label must contain at most 150 printable UTF-16 units.");
     }
+}
+
+export function parseStickerRowFields(body: Record<string, unknown>): StickerDescriptor[] {
+    if (!body || Object.keys(body).some(key => !["chatGuid", "tempGuid", "stickers"].includes(key)) ||
+        typeof body.stickers !== "string" || Buffer.byteLength(body.stickers, "utf8") > 8192) {
+        throw new Error("Sticker rows require an ordered stickers JSON field.");
+    }
+    const descriptors = JSON.parse(body.stickers);
+    if (!Array.isArray(descriptors) || descriptors.length < 2 || descriptors.length > 10) {
+        throw new Error("A sticker row must contain 2 to 10 stickers.");
+    }
+    for (const descriptor of descriptors) {
+        if (!descriptor || Array.isArray(descriptor) || typeof descriptor !== "object" ||
+            Object.keys(descriptor).some(key => !["name", "stickerLabel"].includes(key))) {
+            throw new Error("Unsupported sticker row descriptor.");
+        }
+        validateStickerFields({ chatGuid: body.chatGuid, tempGuid: body.tempGuid, ...descriptor });
+    }
+    return descriptors;
 }
 
 export function reserveStickerAttempt(tempGuid: string) {
@@ -213,7 +241,41 @@ export function removeStickerUpload(filePath: string) {
 }
 
 export function matchesSentSticker(message: any, guid: string, chatGuid: string, sentAt: number): boolean {
-    const attachment = message?.attachments?.[0];
+    return matchesSentStickerBatch(message, guid, chatGuid, sentAt, 1);
+}
+
+export function stickerBodyRuns(message: any): any[] | null {
+    if (!Array.isArray(message?.attributedBody)) return null;
+    const runs = message.attributedBody.flatMap((body: any) => Array.isArray(body?.runs) ? body.runs : []);
+    return runs.filter((run: any) => run?.attributes?.__kIMFileTransferGUIDAttributeName)
+        .sort((left: any, right: any) => (left.range?.[0] ?? 0) - (right.range?.[0] ?? 0));
+}
+
+export function getStickerLayout(message: any): StickerLayout | null {
+    if (message?.associatedMessageGuid) return null;
+    const bodies = message?.attributedBody;
+    if (!Array.isArray(bodies) || bodies.length !== 1 || !Array.isArray(bodies[0]?.runs)) return null;
+    const runs = stickerBodyRuns(message);
+    const attachments = message?.attachments;
+    if (!runs?.length || !Array.isArray(attachments) || attachments.length !== runs.length ||
+        bodies[0].runs.length !== runs.length || bodies[0].string !== "\uFFFC".repeat(runs.length) ||
+        attachments.some((attachment: any) => attachment?.isSticker !== true || !attachment.guid) ||
+        new Set(attachments.map((attachment: any) => attachment.guid)).size !== attachments.length) return null;
+    const guids: string[] = [];
+    for (const run of runs) {
+        const attrs = run.attributes;
+        const guid = attrs.__kIMFileTransferGUIDAttributeName;
+        if (typeof guid !== "string" || attrs.__kIMMessagePartAttributeName !== 0 ||
+            attrs.__kIMEmojiImageAttributeName !== 1 || !Array.isArray(run.range) ||
+            run.range.length !== 2 || !Number.isInteger(run.range[0]) || run.range[0] !== guids.length ||
+            run.range[1] !== 1 || !attachments.some((attachment: any) => attachment.guid === guid)) return null;
+        guids.push(guid);
+    }
+    if (new Set(guids).size !== guids.length) return null;
+    return { attachmentGuids: guids, partIndex: 0 };
+}
+
+export function matchesSentStickerBatch(message: any, guid: string, chatGuid: string, sentAt: number, count: number, filenames?: string[], expectedGuids?: string[]): boolean {
     return !!(
         message?.guid === guid &&
         message?.isFromMe === true &&
@@ -224,12 +286,16 @@ export function matchesSentSticker(message: any, guid: string, chatGuid: string,
         message.dateCreated.getTime() >= sentAt &&
         message?.chats?.some((chat: any) => chat.guid === chatGuid && chat.serviceName === "iMessage") &&
         !message.associatedMessageGuid &&
-        message.attachments?.length === 1 &&
-        attachment.isSticker === true &&
-        !!attachment.guid &&
-        !!attachment.stickerUserInfo &&
-        (attachment.stickerUserInfo.length > 0 ||
-            attachment.stickerUserInfo.byteLength > 0 ||
-            attachment.stickerUserInfo.size > 0)
+        message.attachments?.length === count &&
+        new Set(message.attachments.map((attachment: any) => attachment.guid)).size === count &&
+        message.attachments.every((attachment: any) => attachment?.isSticker === true && !!attachment.guid &&
+            !!attachment.stickerUserInfo && (attachment.stickerUserInfo.length > 0 ||
+            attachment.stickerUserInfo.byteLength > 0 || attachment.stickerUserInfo.size > 0)) &&
+        (count === 1 || (Array.isArray(expectedGuids) && expectedGuids.length === count &&
+            new Set(expectedGuids).size === count && expectedGuids.every(expected => typeof expected === "string" &&
+                message.attachments.some((attachment: any) => attachment.guid === expected)) &&
+            (message.attributedBody == null || (getStickerLayout(message) &&
+                stickerBodyRuns(message).every((run, index) => run.attributes.__kIMFileTransferGUIDAttributeName === expectedGuids[index] &&
+                    (!filenames || run.attributes.__kIMFilenameAttributeName === filenames[index]))))))
     );
 }

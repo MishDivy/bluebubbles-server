@@ -8,6 +8,7 @@ import { AttachmentResponse } from "@server/types";
 import { DEFAULT_ATTACHMENT_CONFIG } from "./constants";
 import type { AttachmentSerializerMultiParams, AttachmentSerializerSingleParams } from "./types";
 import { AttachmentInterface } from "../interfaces/attachmentInterface";
+import { normalizeStickerMetadata } from "@server/api/stickerMetadata";
 
 export class AttachmentSerializer {
     static async serialize({
@@ -58,7 +59,7 @@ export class AttachmentSerializer {
             try {
                 // If we want to convert the attachment, do so here.
                 // So long as we haven't done it yet.
-                if (config.convert && !fPath.includes(FileSystem.convertDir)) {
+                if (config.convert && attachment.isSticker !== true && !fPath.includes(FileSystem.convertDir)) {
                     const converters = [convertImage, convertAudio];
                     for (const conversion of converters) {
                         // Try to convert the attachments using available converters
@@ -137,6 +138,9 @@ export class AttachmentSerializer {
         if (config.loadData) {
             output.data = data as string;
         }
+
+        const sticker = normalizeStickerMetadata(attachment);
+        if (sticker) output.metadata = { ...(output.metadata ?? {}), sticker };
 
         return output;
     }

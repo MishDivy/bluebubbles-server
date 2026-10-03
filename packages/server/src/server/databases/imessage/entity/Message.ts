@@ -12,9 +12,12 @@ import { isMinBigSur, isMinCatalina, isMinHighSierra, isMinMonterey, isMinSequoi
 import { NSAttributedString } from "node-typedstream";
 import { AttributedBodyTransformer } from "@server/databases/transformers/AttributedBodyTransformer";
 import { AttributedBodyUtils } from "@server/utils/AttributedBodyUtils";
+import type { StickerLayout } from "@server/api/stickers";
 
 @Entity("message")
 export class Message {
+    verifiedStickerLayout?: StickerLayout;
+
     universalText(sanitize = false): string | null {
         let text = this.text;
         const attributedText = AttributedBodyUtils.extractText(this.attributedBody);

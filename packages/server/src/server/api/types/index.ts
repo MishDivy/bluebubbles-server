@@ -87,5 +87,5 @@ export type SendMultipartTextParams = {
 export class Socket extends net.Socket {
     id: string;
 
-    capabilities?: { customEmojiReactions: boolean; stickerSending: boolean };
+    capabilities?: { customEmojiReactions: boolean; stickerSending: boolean; stickerRows: boolean };
 }

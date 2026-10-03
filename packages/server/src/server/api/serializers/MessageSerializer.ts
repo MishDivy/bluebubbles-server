@@ -7,6 +7,7 @@ import { ChatSerializer } from "./ChatSerializer";
 import { DEFAULT_ATTACHMENT_CONFIG, DEFAULT_MESSAGE_CONFIG } from "./constants";
 import { HandleSerializer } from "./HandleSerializer";
 import type { MessageSerializerMultiParams, MessageSerializerSingleParams } from "./types";
+import { getStickerLayout } from "@server/api/stickers";
 
 export class MessageSerializer {
     static async serialize({
@@ -164,6 +165,20 @@ export class MessageSerializer {
             threadOriginatorGuid: message.threadOriginatorGuid,
             hasPayloadData: !!message.payloadData
         };
+
+        const stickerLayout = getStickerLayout(message) ?? message.verifiedStickerLayout;
+        if (stickerLayout) {
+            output.stickerLayout = stickerLayout;
+            for (const attachment of output.attachments) {
+                const index = stickerLayout.attachmentGuids.indexOf(attachment.guid);
+                if (index < 0) continue;
+                const sticker = attachment.metadata?.sticker;
+                attachment.metadata = { ...(attachment.metadata ?? {}), sticker: {
+                    ...(typeof sticker === "object" ? sticker : {}),
+                    row: { index, partIndex: 0, count: stickerLayout.attachmentGuids.length }
+                } };
+            }
+        }
 
         // Non-essentials
         if (!isForNotification) {

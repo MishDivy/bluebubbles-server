@@ -4,7 +4,7 @@ import { Server as SocketServer, ServerOptions } from "socket.io";
 // HTTP libraries
 import KoaApp from "koa";
 import koaBody from "koa-body";
-import { isStickerUploadRequest, stickerMultipartLimits, removeStickerUpload } from "@server/api/stickers";
+import { isStickerUploadRequest, isStickerRowUploadRequest, stickerMultipartLimits, stickerRowMultipartLimits, removeStickerUpload } from "@server/api/stickers";
 import koaJson from "koa-json";
 import KoaRouter from "koa-router";
 import koaCors from "koa-cors";
@@ -129,7 +129,7 @@ export class HttpService extends Loggable {
                     formidable: {
                         // 1GB (1024 b * 1024 kb * 1024 mb)
                         maxFileSize: 1024 * 1024 * 1024, // Defaults to 200mb
-                        ...(nativeStickerUpload ? stickerMultipartLimits : {})
+                        ...(nativeStickerUpload ? (isStickerRowUploadRequest(ctx.method, ctx.path) ? stickerRowMultipartLimits : stickerMultipartLimits) : {})
                     }
                 })(ctx, next);
             } finally {

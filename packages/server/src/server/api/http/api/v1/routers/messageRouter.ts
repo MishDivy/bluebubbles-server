@@ -15,9 +15,29 @@ import { FileStream, Success } from "../responses/success";
 import { BadRequest, IMessageError, NotFound } from "../responses/errors";
 import { parseWithQuery } from "../utils";
 import { isMinVentura } from "@server/env";
-import { StickerUnconfirmedError } from "@server/api/stickers";
+import { StickerUnconfirmedError, parseStickerRowFields } from "@server/api/stickers";
 
 export class MessageRouter {
+    static async sendStickerRow(ctx: RouterContext, _: Next) {
+        const { chatGuid, tempGuid } = ctx.request.body;
+        let confirmed = false;
+        try {
+            const descriptors = parseStickerRowFields(ctx.request.body);
+            const message = await MessageInterface.sendStickerRow({ chatGuid, tempGuid, stickers: descriptors.map((descriptor, index) => ({
+                ...descriptor, attachmentPath: (ctx.request.files[`attachment${index}`] as File).path
+            })) });
+            confirmed = true;
+            const data = await MessageSerializer.serialize({ message,
+                config: { loadChatParticipants: false, parseAttributedBody: true, parseMessageSummary: true, parsePayloadData: true } });
+            return new Success(ctx, { message: "Sticker row sent!", data }).send();
+        } catch (error) {
+            if (confirmed || error instanceof StickerUnconfirmedError) throw new IMessageError({
+                message: "Sticker row send not confirmed", error: "Check the chat before sending again. Automatic retry is disabled."
+            });
+            throw new BadRequest({ error: "Native sticker row request rejected. Verify capability, iMessage chat and upload bounds." });
+        }
+    }
+
     static async sendSticker(ctx: RouterContext, _: Next) {
         const { chatGuid, tempGuid, name, stickerLabel } = ctx.request.body;
         const attachment = ctx.request.files.attachment as File;

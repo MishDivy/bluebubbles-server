@@ -32,7 +32,9 @@ function load(relative, overrides = {}) {
             if (name === "@server/helpers/utils") return utils;
             if (name === "@server/lib/logging/Loggable" || name.endsWith("lib/logging/Loggable")) return { Loggable };
             if (name === "@server/api/reactions") return read(path.join(sourceRoot, "api/reactions.ts"));
-            if (name === "@server/api/stickers") return {};
+            if (name === "@server/api/stickers") return { getStickerLayout: () => null, hasStickerAttempt: () => false };
+            if (name === "@server/api/stickerMetadata") return { normalizeStickerMetadata: () => null, decodeStickerAttribution: () => null };
+            if (name === "@server/databases/transformers/StickerAttributionTransformer") return {};
             if (name === "@server/databases/transformers/MessageTypeTransformer") {
                 return read(path.join(sourceRoot, "databases/transformers/MessageTypeTransformer.ts"));
             }
@@ -102,7 +104,9 @@ test("database types preserve legacy, unknown and missing values", () => {
     assert.equal(transformer.from(1000), "sticker");
     assert.equal(transformer.from(2006), "emoji");
     assert.equal(transformer.from(3006), "-emoji");
-    assert.equal(transformer.from(2007), "2007");
+    assert.equal(transformer.from(2007), "sticker-reaction");
+    assert.equal(transformer.from(3007), "-sticker-reaction");
+    assert.equal(transformer.from(2008), "2008");
     assert.equal(transformer.from(4000), "4000");
     assert.equal(transformer.from(null), null);
     assert.equal(transformer.from(undefined), null);
@@ -119,7 +123,7 @@ test("received emoji/removal metadata survives full and reduced notification ser
         "./HandleSerializer": {},
         "./constants": { DEFAULT_MESSAGE_CONFIG: {}, DEFAULT_ATTACHMENT_CONFIG: {} }
     });
-    for (const type of ["love", "sticker", "emoji", "-emoji", "4000"]) {
+    for (const type of ["love", "sticker", "sticker-reaction", "-sticker-reaction", "emoji", "-emoji", "4000"]) {
         for (const notification of [false, true]) {
             const serialized = await MessageSerializer.serialize({
                 message: {

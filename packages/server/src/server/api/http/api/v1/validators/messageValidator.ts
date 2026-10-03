@@ -9,6 +9,7 @@ import { FileSystem } from "@server/fileSystem";
 import { parseReaction } from "@server/api/reactions";
 import {
     validateStickerFields,
+    parseStickerRowFields,
     readStickerUpload,
     hasStickerAttempt,
     MAX_STICKER_BYTES
@@ -18,6 +19,23 @@ import { ValidateInput } from "./index";
 import { BadRequest } from "../responses/errors";
 
 export class MessageValidator {
+    static async validateStickerRow(ctx: RouterContext, next: Next) {
+        try {
+            const descriptors = parseStickerRowFields(ctx.request?.body);
+            const files = ctx.request?.files;
+            if (!files || Object.keys(files).length !== descriptors.length) throw new Error("Sticker row file count mismatch.");
+            for (let index = 0; index < descriptors.length; index++) {
+                const upload = files[`attachment${index}`] as File;
+                if (!upload || Array.isArray(upload) || upload.size < 1 || upload.size > MAX_STICKER_BYTES) throw new Error("Invalid sticker row attachment.");
+                readStickerUpload(upload.path, descriptors[index].name);
+            }
+            if (Server().httpService.sendCache.find(ctx.request.body.tempGuid) || hasStickerAttempt(ctx.request.body.tempGuid)) throw new Error("This temporary GUID is already queued.");
+        } catch {
+            throw new BadRequest({ error: "Invalid sticker row upload or duplicate temporary GUID." });
+        }
+        await next();
+    }
+
     static async validateSticker(ctx: RouterContext, next: Next) {
         try {
             validateStickerFields(ctx.request?.body);

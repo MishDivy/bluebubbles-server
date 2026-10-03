@@ -5,6 +5,7 @@ import { Chat } from "../Chat";
 import { Handle } from "../Handle";
 import { Message } from "../Message";
 import { MessageTypeTransformer } from "@server/databases/transformers/MessageTypeTransformer";
+import { decodeStickerAttribution } from "@server/api/stickerMetadata";
 
 export class MessageDecoder {
     messageCache: Map<number, Message> = new Map();
@@ -179,13 +180,13 @@ export class MessageDecoder {
         attachment.uti = entry.attachment_uti;
         attachment.mimeType = entry.attachment_mime_type;
         attachment.transferState = entry.attachment_transfer_state;
-        attachment.isOutgoing = entry.attachment_is_outgoing;
+        attachment.isOutgoing = entry.attachment_is_outgoing === true || entry.attachment_is_outgoing === 1;
         attachment.userInfo = entry.attachment_user_info;
         attachment.transferName = entry.attachment_transfer_name;
         attachment.totalBytes = entry.attachment_total_bytes;
-        attachment.isSticker = entry.attachment_is_sticker;
+        attachment.isSticker = entry.attachment_is_sticker === true || entry.attachment_is_sticker === 1;
         attachment.stickerUserInfo = entry.attachment_sticker_user_info;
-        attachment.attributionInfo = entry.attachment_attribution_info;
+        attachment.attributionInfo = decodeStickerAttribution(entry.attachment_attribution_info);
         attachment.hideAttachment = entry.attachment_hide_attachment;
         attachment.originalGuid = entry.attachment_original_guid;
 
