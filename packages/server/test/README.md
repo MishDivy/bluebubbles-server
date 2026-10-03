@@ -65,7 +65,7 @@ The builder generates the new ASAR integrity record and signs the new app ad hoc
 For a native-sticker candidate, manually dispatch the same workflow from the
 reviewed feature revision with `native_stickers=true`. The explicit
 `native-stickers` build profile pins helper
-`77227e5bbff6076b3f83a1887fe0092e705bd703`, runs its synthetic tests, and builds with
+`e5c51ca91c8bc8b33fb9737e35ce36472937dacb`, runs its synthetic tests, and builds with
 `BBH_EXPERIMENTAL_STICKERS=1` into its separate output directory. It also tests
 and builds the bounded ImageIO converter at build time. Packaging signs that new
 executable ad hoc, retains its signed bytes, and verifies its embedded hash. The
