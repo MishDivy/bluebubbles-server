@@ -20,6 +20,9 @@ export class GeneralInterface {
             helper_connected: !!Server().privateApi?.helper,
             privateApiCapabilities: Server().privateApi?.capabilities ?? {
                 customEmojiReactions: false,
+                stickerSending: false,
+                stickerPlacement: false,
+                stickerRows: false,
                 stickerReactions: false
             },
             detected_icloud: await FileSystem.getIcloudAccount(),

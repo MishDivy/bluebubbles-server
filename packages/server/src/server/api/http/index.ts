@@ -4,6 +4,7 @@ import { Server as SocketServer, ServerOptions } from "socket.io";
 // HTTP libraries
 import KoaApp from "koa";
 import koaBody from "koa-body";
+import { isStickerUploadRequest, stickerMultipartLimits, removeStickerUpload } from "@server/api/stickers";
 import koaJson from "koa-json";
 import KoaRouter from "koa-router";
 import koaCors from "koa-cors";
@@ -116,19 +117,30 @@ export class HttpService extends Loggable {
         this.koaApp.use(ErrorMiddleware);
 
         // Increase size limits from the default 1mb
-        this.koaApp.use(
-            koaBody({
-                jsonLimit: "100mb",
-                textLimit: "100mb",
-                formLimit: "1024mb",
-                multipart: true,
-                parsedMethods: ["POST", "PUT", "PATCH", "DELETE"],
-                formidable: {
-                    // 1GB (1024 b * 1024 kb * 1024 mb)
-                    maxFileSize: 1024 * 1024 * 1024 // Defaults to 200mb
+        this.koaApp.use(async (ctx, next) => {
+            const nativeStickerUpload = isStickerUploadRequest(ctx.method, ctx.path);
+            try {
+                await koaBody({
+                    jsonLimit: nativeStickerUpload ? "8kb" : "100mb",
+                    textLimit: nativeStickerUpload ? "8kb" : "100mb",
+                    formLimit: nativeStickerUpload ? "8kb" : "1024mb",
+                    multipart: true,
+                    parsedMethods: ["POST", "PUT", "PATCH", "DELETE"],
+                    formidable: {
+                        // 1GB (1024 b * 1024 kb * 1024 mb)
+                        maxFileSize: 1024 * 1024 * 1024, // Defaults to 200mb
+                        ...(nativeStickerUpload ? stickerMultipartLimits : {})
+                    }
+                })(ctx, next);
+            } finally {
+                if (nativeStickerUpload) {
+                    for (const file of Object.values(ctx.request?.files ?? {})) {
+                        for (const upload of Array.isArray(file) ? file : [file])
+                            removeStickerUpload((upload as any)?.path);
+                    }
                 }
-            })
-        );
+            }
+        });
 
         // Don't show it "pretty" by default, but only if there is a `pretty` param
         this.koaApp.use(

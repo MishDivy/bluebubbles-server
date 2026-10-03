@@ -57,14 +57,20 @@ export class PrivateApiService extends Loggable {
         return this.clients.length > 0;
     }
 
-    get capabilities(): { customEmojiReactions: boolean; stickerReactions: boolean } {
+    get capabilities(): {
+        customEmojiReactions: boolean;
+        stickerSending: boolean;
+        stickerPlacement: boolean;
+        stickerRows: boolean;
+        stickerReactions: boolean;
+    } {
         const messages = this.activeClients["com.apple.MobileSMS"];
+        const connected = !!messages && !messages.destroyed && this.clients.includes(messages);
         return {
-            customEmojiReactions:
-                !!messages &&
-                !messages.destroyed &&
-                this.clients.includes(messages) &&
-                messages.capabilities?.customEmojiReactions === true,
+            customEmojiReactions: connected && messages.capabilities?.customEmojiReactions === true,
+            stickerSending: connected && messages.capabilities?.stickerSending === true,
+            stickerPlacement: false,
+            stickerRows: false,
             stickerReactions: false
         };
     }
@@ -159,7 +165,10 @@ export class PrivateApiService extends Loggable {
     }
 
     registerClient(process: string, socket: Socket, capabilities?: Record<string, unknown>) {
-        socket.capabilities = { customEmojiReactions: capabilities?.customEmojiReactions === true };
+        socket.capabilities = {
+            customEmojiReactions: capabilities?.customEmojiReactions === true,
+            stickerSending: capabilities?.stickerSending === true
+        };
         this.activeClients[process] = socket;
         this.emit("client-registered", { process, socket });
     }
@@ -338,9 +347,12 @@ export class PrivateApiService extends Loggable {
                 // Emoji requests must reach the helper that advertised this capability.
                 // Broadcasting could let an older helper reply with an unrelated success or error.
                 const isEmojiReaction = action === "send-reaction" && ["emoji", "-emoji"].includes(data.reactionType);
-                const write = isEmojiReaction
-                    ? this.writeEmojiReaction(`${JSON.stringify(d)}\n`)
-                    : this.writeToClients(`${JSON.stringify(d)}\n`);
+                const write =
+                    action === "send-sticker"
+                        ? this.writeSticker(`${JSON.stringify(d)}\n`)
+                        : isEmojiReaction
+                        ? this.writeEmojiReaction(`${JSON.stringify(d)}\n`)
+                        : this.writeToClients(`${JSON.stringify(d)}\n`);
                 write.then(success => {
                     if (success) return resolve();
                     reject();
@@ -352,7 +364,7 @@ export class PrivateApiService extends Loggable {
                 return transaction.promise;
             }
         } catch (ex: any) {
-            this.log.debug(`${msg} ${ex?.message ?? ex}`);
+            this.log.debug(action === "send-sticker" ? msg : `${msg} ${ex?.message ?? ex}`);
         } finally {
             // Release the lock after a short delay.
             // This gives the other side a chance to process the data.
@@ -379,6 +391,16 @@ export class PrivateApiService extends Loggable {
 
     private async writeEmojiReaction(data: string): Promise<boolean> {
         if (!this.capabilities.customEmojiReactions) return false;
+        try {
+            await this.writeToClient(this.activeClients["com.apple.MobileSMS"], data);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    private async writeSticker(data: string): Promise<boolean> {
+        if (!this.capabilities.stickerSending) return false;
         try {
             await this.writeToClient(this.activeClients["com.apple.MobileSMS"], data);
             return true;

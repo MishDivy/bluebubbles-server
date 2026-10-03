@@ -15,8 +15,45 @@ import { FileStream, Success } from "../responses/success";
 import { BadRequest, IMessageError, NotFound } from "../responses/errors";
 import { parseWithQuery } from "../utils";
 import { isMinVentura } from "@server/env";
+import { StickerUnconfirmedError } from "@server/api/stickers";
 
 export class MessageRouter {
+    static async sendSticker(ctx: RouterContext, _: Next) {
+        const { chatGuid, tempGuid, name, stickerLabel } = ctx.request.body;
+        const attachment = ctx.request.files.attachment as File;
+        let confirmed = false;
+        try {
+            const message = await MessageInterface.sendSticker({
+                chatGuid,
+                tempGuid,
+                name,
+                stickerLabel,
+                attachmentPath: attachment.path
+            });
+            confirmed = true;
+            const data = await MessageSerializer.serialize({
+                message,
+                config: {
+                    loadChatParticipants: false,
+                    parseAttributedBody: true,
+                    parseMessageSummary: true,
+                    parsePayloadData: true
+                }
+            });
+            return new Success(ctx, { message: "Sticker sent!", data }).send();
+        } catch (error) {
+            if (confirmed || error instanceof StickerUnconfirmedError) {
+                throw new IMessageError({
+                    message: "Sticker send not confirmed",
+                    error: "Check the chat before sending again. Automatic retry is disabled."
+                });
+            }
+            throw new BadRequest({
+                error: "Native sticker request rejected. Verify capability, iMessage chat and upload bounds."
+            });
+        }
+    }
+
     static async sentCount(ctx: RouterContext, _: Next) {
         const { after, before, chatGuid, minRowId, maxRowId } = ctx.request.query;
         const beforeDate = isNotEmpty(before) ? new Date(Number.parseInt(before as string, 10)) : null;
@@ -165,7 +202,7 @@ export class MessageRouter {
                 const variable = textQueries[0].statement.split(" ")[2].replace(":", "");
                 const operator = textQueries[0].statement.split(" ")[1];
                 const term = textQueries[0].args[variable];
-                
+
                 // Strip the % wildcards from the start/end
                 const strippedTerm = term.replace(/^%+|%+$/g, "");
 

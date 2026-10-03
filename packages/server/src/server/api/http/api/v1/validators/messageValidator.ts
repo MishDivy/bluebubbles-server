@@ -7,11 +7,44 @@ import { Server } from "@server";
 import { isEmpty } from "@server/helpers/utils";
 import { FileSystem } from "@server/fileSystem";
 import { parseReaction } from "@server/api/reactions";
+import {
+    validateStickerFields,
+    readStickerUpload,
+    hasStickerAttempt,
+    MAX_STICKER_BYTES
+} from "@server/api/stickers";
 
 import { ValidateInput } from "./index";
 import { BadRequest } from "../responses/errors";
 
 export class MessageValidator {
+    static async validateSticker(ctx: RouterContext, next: Next) {
+        try {
+            validateStickerFields(ctx.request?.body);
+            const files = ctx.request?.files;
+            const attachment = files?.attachment as File;
+            if (
+                !files ||
+                Object.keys(files).length !== 1 ||
+                !attachment ||
+                Array.isArray(attachment) ||
+                attachment.size < 1 ||
+                attachment.size > MAX_STICKER_BYTES
+            ) {
+                throw new Error("Provide exactly one sticker image of at most 500 KiB.");
+            }
+            readStickerUpload(attachment.path, ctx.request.body.name);
+            if (
+                Server().httpService.sendCache.find(ctx.request.body.tempGuid) ||
+                hasStickerAttempt(ctx.request.body.tempGuid)
+            )
+                throw new Error("This temporary GUID is already queued.");
+        } catch {
+            throw new BadRequest({ error: "Invalid standalone sticker upload or duplicate temporary GUID." });
+        }
+        await next();
+    }
+
     static countParamRules = {
         chatGuid: "string",
         after: "numeric|min:0",
@@ -111,7 +144,7 @@ export class MessageValidator {
         (ctx.request.body as any).method = saniMethod;
 
         // Make sure the message isn't already in the queue
-        if (Server().httpService.sendCache.find(tempGuid)) {
+        if (Server().httpService.sendCache.find(tempGuid) || hasStickerAttempt(tempGuid)) {
             throw new BadRequest({ error: `Message is already queued to be sent! (Temp GUID: ${tempGuid})` });
         }
 
@@ -151,7 +184,7 @@ export class MessageValidator {
         (ctx.request.body as any).isAudioMessage = isAudioMessage === "true" ? true : false;
 
         // Make sure the message isn't already in the queue
-        if (Server().httpService.sendCache.find(tempGuid)) {
+        if (Server().httpService.sendCache.find(tempGuid) || hasStickerAttempt(tempGuid)) {
             throw new BadRequest({ error: "Attachment is already queued to be sent!" });
         }
 

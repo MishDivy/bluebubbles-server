@@ -32,6 +32,7 @@ function load(relative, overrides = {}) {
             if (name === "@server/helpers/utils") return utils;
             if (name === "@server/lib/logging/Loggable" || name.endsWith("lib/logging/Loggable")) return { Loggable };
             if (name === "@server/api/reactions") return read(path.join(sourceRoot, "api/reactions.ts"));
+            if (name === "@server/api/stickers") return {};
             if (name === "@server/databases/transformers/MessageTypeTransformer") {
                 return read(path.join(sourceRoot, "databases/transformers/MessageTypeTransformer.ts"));
             }
@@ -197,7 +198,7 @@ test("real helper ping, registration and disconnection gate the Messages capabil
     await handler.handle({ process: "com.apple.MobileSMS", capabilities: { customEmojiReactions: "true" } }, messages);
     assert.equal(service.capabilities.customEmojiReactions, false);
     await handler.handle({ process: "com.apple.MobileSMS", capabilities: { customEmojiReactions: true } }, messages);
-    assert.deepEqual(service.capabilities, { customEmojiReactions: true, stickerReactions: false });
+    assert.deepEqual(service.capabilities, { customEmojiReactions: true, stickerSending: false, stickerPlacement: false, stickerRows: false, stickerReactions: false });
     service.addClient(facetime);
     await handler.handle({ process: "com.apple.FaceTime", capabilities: { customEmojiReactions: true } }, facetime);
     service.removeClient(messages);

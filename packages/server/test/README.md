@@ -8,7 +8,7 @@ node --test packages/server/test/*.test.cjs
 node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json
 ```
 
-Use Node 20 and npm 10. The upstream manifest's `devEngines` shape is rejected by newer npm; on Linux, `--force` permits installing the locked macOS-only packages for static checks. Installation scripts are disabled. The tests transpile actual server modules using the existing TypeScript dependency and replace external/native boundaries. They never open Messages, send messages, inject helpers or start Electron. The checks workflow runs on `main`, `feature/custom-reactions` and pull requests. It also builds the production webpack bundle, without packaging or publishing it.
+Use Node 20 and npm 10. The upstream manifest's `devEngines` shape is rejected by newer npm; on Linux, `--force` permits installing the locked macOS-only packages for static checks. Installation scripts are disabled. The tests transpile actual server modules using the existing TypeScript dependency and replace external/native boundaries. They never open Messages, send messages, inject helpers or start Electron. The checks workflow runs on `main`, `feature/custom-reactions`, `feature/native-stickers` and pull requests. It also builds the production webpack bundle, without packaging or publishing it.
 
 ## Fork production branch
 
@@ -22,9 +22,19 @@ Received reactions keep `associatedMessageType`: the six classic names, `emoji` 
 
 Send through the existing reaction endpoint with a classic descriptor or one emoji grapheme in `reaction` (for example `"👩🏾‍💻"`); prefix `-` to remove that exact emoji. Socket clients use the existing `tapback` field with the same values. The server validates emoji structure and a nonnegative integer `partIndex`, then sends `reactionType: "emoji"` / `"-emoji"` plus `reactionEmoji` to the helper. Arbitrary text, numeric codes and multiple emojis are rejected.
 
-`server/info` exposes `privateApiCapabilities.customEmojiReactions`, which is true only while the connected `com.apple.MobileSMS` helper explicitly advertises that capability. Missing capability, old helper, another process or disconnect means false. Emoji sends go only to that helper. Received metadata remains available independently. `stickerReactions` is false: receiving attachment metadata does not establish a native sticker-send API.
+`server/info` exposes `privateApiCapabilities.customEmojiReactions`, which is true only while the connected `com.apple.MobileSMS` helper explicitly advertises that capability. Missing capability, old helper, another process or disconnect means false. Emoji sends go only to that helper. Received metadata remains available independently. `stickerReactions` remains false.
 
 Custom confirmation checks the sender, target GUID, part, type, emoji, chat and send time. `bp:GUID` is accepted only for part zero for rich-link bubbles. Outgoing promise matching uses metadata, without relying on localized reaction text. A native dispatch without a matching message is an error; there is no automatic retry. Offline checks cannot establish macOS selector behavior, delivery acceptance, replacement/removal persistence or sticker-placement behavior. Those require a controlled native test after review.
+
+## Experimental standalone stickers
+
+The `feature/native-stickers` branch adds authenticated multipart `POST /api/v1/message/send-sticker`: one `attachment`, `chatGuid`, required `tempGuid`, safe basename `name` (at most 255 UTF-16 units), and optional `stickerLabel` (at most 150 UTF-16 units). It rejects every additional field, including reply targets, placement, row, reaction and audio fields. The chat must already exist and use iMessage. `privateApiCapabilities.stickerSending` requires explicit true from the connected Messages helper; `stickerPlacement`, `stickerRows` and `stickerReactions` are false. The packaged helper pin remains unchanged, so the production helper cannot enable this experiment.
+
+The route limits multipart file bytes to 500 KiB before staging, preserves repeated file fields for rejection, bounds text fields to 8 KiB and cleans parsed uploads even when downstream auth or capability checks fail. Header checks accept PNG/APNG, GIF and JPEG with dimensions at most 618 by 618, at most 100 frames and at most 25 million canvas pixels across frames. These checks do not decode pixels; the opt-in native helper must fully decode and enforce the same bounds before dispatch. Neither layer substitutes an ordinary photo send.
+
+The server dispatches `send-sticker` only to the capable Messages helper and confirms the exact returned GUID against a fresh outgoing, sent, error-free iMessage row in the requested chat, with exactly one outgoing sticker attachment and nonempty sticker metadata. A helper response without that row is an uncertain outcome. The server does not retry it. Attempted temporary GUIDs stay blocked for the life of the server process, including successful and uncertain outcomes. The bounded guard refuses additional attempts at 4096 entries without evicting earlier entries. Restart clears this process-local guard; review the chat and reconcile uncertain attempts before restarting or choosing a new temporary GUID. This is not durable exactly-once delivery.
+
+Synthetic checks use the installed multipart parser, image header fixtures and mocked native/database boundaries. They verify bounds, repeated-file rejection, cleanup, capabilities, exact confirmation, concurrent duplicate suppression and ordinary send-route collisions. They do not establish native ABI behavior, remote delivery, placement, rows or sticker tapbacks. Controlled macOS fixtures and native acceptance remain required.
 
 ## Attribution
 

@@ -6,7 +6,13 @@ export type ServerMetadataResponse = {
     server_version: string;
     private_api: boolean;
     helper_connected: boolean;
-    privateApiCapabilities: { customEmojiReactions: boolean; stickerReactions: boolean };
+    privateApiCapabilities: {
+        customEmojiReactions: boolean;
+        stickerSending: boolean;
+        stickerPlacement: boolean;
+        stickerRows: boolean;
+        stickerReactions: boolean;
+    };
     proxy_service: string;
     detected_icloud: string;
     detected_imessage: string;

@@ -9,6 +9,32 @@ import { PrivateApiAction } from ".";
 export class PrivateApiAttachment extends PrivateApiAction {
     tag = "PrivateApiAttachment";
 
+    async sendSticker({
+        chatGuid,
+        filePath,
+        filename,
+        stickerLabel
+    }: {
+        chatGuid: string;
+        filePath: string;
+        filename?: string;
+        stickerLabel?: string;
+    }): Promise<TransactionResult> {
+        if (!this.api.capabilities.stickerSending)
+            throw new Error("Native sticker sending is not supported by the connected Messages helper.");
+        this.throwForNoMissingFields("send-sticker", [chatGuid, filePath]);
+        return this.sendApiMessage(
+            "send-sticker",
+            {
+                chatGuid,
+                filePath,
+                ...(filename != null ? { filename } : {}),
+                ...(stickerLabel != null ? { stickerLabel } : {})
+            },
+            new TransactionPromise(TransactionType.ATTACHMENT)
+        );
+    }
+
     async send({
         chatGuid,
         filePath,

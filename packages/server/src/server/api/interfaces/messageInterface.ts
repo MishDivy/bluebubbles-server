@@ -29,9 +29,107 @@ import {
     requireReactionCapability,
     matchesEmojiReaction
 } from "@server/api/reactions";
+import {
+    validateStickerFields,
+    readStickerUpload,
+    reserveStickerAttempt,
+    hasStickerAttempt,
+    matchesSentSticker,
+    StickerUnconfirmedError
+} from "@server/api/stickers";
 
 export class MessageInterface {
     static possibleReactions: string[] = classicReactions;
+
+    static async sendSticker({
+        chatGuid,
+        tempGuid,
+        name,
+        stickerLabel,
+        attachmentPath
+    }: {
+        chatGuid: string;
+        tempGuid: string;
+        name: string;
+        stickerLabel?: string;
+        attachmentPath: string;
+    }): Promise<Message> {
+        validateStickerFields({ chatGuid, tempGuid, name, ...(stickerLabel != null ? { stickerLabel } : {}) });
+        checkPrivateApiStatus();
+        if (!Server().privateApi.capabilities.stickerSending)
+            throw new Error("Native sticker sending is not supported by the connected Messages helper.");
+        const [chats] = await Server().iMessageRepo.getChats({
+            chatGuid,
+            withParticipants: false,
+            withLastMessage: false
+        });
+        if (chats.length !== 1 || chats[0].guid !== chatGuid || chats[0].serviceName !== "iMessage") {
+            throw new Error("Native stickers require an existing iMessage chat.");
+        }
+        const bytes = readStickerUpload(attachmentPath, name);
+        if (Server().httpService.sendCache.find(tempGuid) || hasStickerAttempt(tempGuid))
+            throw new Error("This temporary GUID is already queued.");
+        let filePath: string;
+        try {
+            filePath = FileSystem.copyAttachment(attachmentPath, name, "private-api");
+            if (fs.statSync(filePath).size !== bytes.length || !fs.readFileSync(filePath).equals(bytes)) {
+                throw new Error("Sticker staging changed during validation.");
+            }
+        } catch (error) {
+            if (filePath) {
+                try {
+                    fs.unlinkSync(filePath);
+                    fs.rmdirSync(path.dirname(filePath));
+                } catch {
+                    /* Preserve the validation error. */
+                }
+            }
+            throw error;
+        }
+        try {
+            reserveStickerAttempt(tempGuid);
+        } catch (error) {
+            try {
+                fs.unlinkSync(filePath);
+                fs.rmdirSync(path.dirname(filePath));
+            } catch {
+                /* Preserve the duplicate error. */
+            }
+            throw error;
+        }
+        Server().httpService.sendCache.add(tempGuid);
+        const sentAt = Date.now() - 10000;
+        let result: TransactionResult;
+        try {
+            result = await Server().privateApi.attachment.sendSticker({
+                chatGuid,
+                filePath,
+                filename: name,
+                stickerLabel
+            });
+        } catch {
+            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+        }
+        if (typeof result?.identifier !== "string" || !result.identifier) {
+            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+        }
+        let message: Message;
+        try {
+            message = await resultAwaiter({
+                maxWaitMs: 60000,
+                getData: async () => {
+                    const row = await Server().iMessageRepo.getMessage(result.identifier, true, true);
+                    return matchesSentSticker(row, result.identifier, chatGuid, sentAt) ? row : null;
+                }
+            });
+        } catch {
+            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+        }
+        if (!matchesSentSticker(message, result.identifier, chatGuid, sentAt)) {
+            throw new StickerUnconfirmedError("Sticker send was not confirmed. Check the chat before sending again.");
+        }
+        return message;
+    }
 
     /**
      * Sends a message by executing the sendMessage AppleScript

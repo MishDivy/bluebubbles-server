@@ -3,7 +3,7 @@ name: Custom reactions checks
 on:
     pull_request:
     push:
-        branches: [main, feature/custom-reactions]
+        branches: [main, feature/custom-reactions, feature/native-stickers]
 
 permissions:
     contents: read
