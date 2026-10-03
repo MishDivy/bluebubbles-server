@@ -184,7 +184,7 @@ int main(int argc, const char *argv[]) {
         NSDictionary *sequence = @{(NSString *)kCGImagePropertyHEICSDictionary: @{
             (NSString *)kCGImagePropertyHEICSLoopCount: @2, (NSString *)kCGImagePropertyHEICSFrameInfoArray: timing}};
         NSNumber *loop = nil;
-        assert([SPSequenceTiming(sequence, @[small, small], 2, &loop) isEqual:@[@0.1, @0.25]] && [loop isEqual:@2]);
+        assert(([SPSequenceTiming(sequence, @[small, small], 2, &loop) isEqual:@[@0.1, @0.25]] && [loop isEqual:@2]));
         NSMutableDictionary *badSequence = [sequence[(NSString *)kCGImagePropertyHEICSDictionary] mutableCopy];
         [badSequence removeObjectForKey:(NSString *)kCGImagePropertyHEICSLoopCount];
         assert(!SPSequenceTiming(@{(NSString *)kCGImagePropertyHEICSDictionary: badSequence}, @[small, small], 2, &loop));
