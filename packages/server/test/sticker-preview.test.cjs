@@ -53,7 +53,8 @@ function metadata(bytes, frames = 1) {
     return { version: 1, ok: true, format: frames > 1 ? "apng" : "png", frames, width: 32, height: 32, hasAlpha: true, bytes: bytes.length };
 }
 function fixture() {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bb-sticker-preview-test-"));
+    // macOS exposes its temporary root through /var, which is a symlink.
+    const directory = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "bb-sticker-preview-test-"));
     const source = path.join(directory, "original.heic"); const binary = path.join(directory, "converter"); const cache = path.join(directory, "cache");
     fs.writeFileSync(source, "synthetic HEIC bytes", { mode: 0o600 }); fs.writeFileSync(binary, "synthetic converter", { mode: 0o700 });
     return { directory, source, binary, cache, attachment: { isSticker: true, filePath: source },
