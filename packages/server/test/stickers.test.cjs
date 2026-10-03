@@ -357,7 +357,9 @@ test("real HTTP parser cleans native uploads after downstream auth or capability
     service.koaApp = new Koa();
     service.configureKoa();
     const parser = service.koaApp.middleware[2];
-    for (const pathname of ["/api/v1/message/send-sticker", "/api/v1/message/send-sticker/", "/API/V1/MESSAGE/SEND-STICKER", "/api/v1/message/attachment"]) {
+    const nativePaths = ["/api/v1/message/send-sticker", "/api/v1/message/send-sticker/", "/API/V1/MESSAGE/SEND-STICKER",
+        "/api/v1/message/send-sticker-placement", "/API/V1/MESSAGE/SEND-STICKER-TAPBACK/", "/api/v1/message/remove-sticker-tapback"];
+    for (const pathname of [...nativePaths, "/api/v1/message/attachment"]) {
         const boundary = "synthetic-http-upload";
         const body = Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="attachment"; filename="fixture.png"\r\nContent-Type: image/png\r\n\r\n`), png(), Buffer.from(`\r\n--${boundary}--\r\n`)]);
         const request = Readable.from([body]);
@@ -374,7 +376,7 @@ test("real HTTP parser cleans native uploads after downstream auth or capability
         assert.equal(fs.existsSync(uploaded), pathname === "/api/v1/message/attachment");
         stickers.removeStickerUpload(uploaded);
     }
-    for (const pathname of ["/api/v1/message/send-sticker", "/API/V1/MESSAGE/SEND-STICKER", "/api/v1/message/attachment"]) {
+    for (const pathname of [...nativePaths, "/api/v1/message/attachment"]) {
         const body = Buffer.from(JSON.stringify({ ignored: "x".repeat(9000) }));
         const request = Readable.from([body]);
         request.headers = { "content-type": "application/json", "content-length": String(body.length) };
@@ -655,7 +657,7 @@ test("only connected Messages helper explicit true advertises and receives nativ
     assert.equal(service.capabilities.stickerSending, false);
     service.registerClient("com.apple.MobileSMS", messages, { stickerSending: "true" });
     assert.equal(service.capabilities.stickerSending, false);
-    service.registerClient("com.apple.MobileSMS", messages, { stickerSending: true, stickerPlacement: true });
+    service.registerClient("com.apple.MobileSMS", messages, { stickerSending: true });
     assert.equal(service.capabilities.stickerSending, true);
     for (const name of ["stickerPlacement", "stickerRows", "stickerReactions"])
         assert.equal(service.capabilities[name], false);
@@ -688,6 +690,131 @@ test("rows require explicit connected Messages capability and preserve construct
     assert.deepEqual(service.readTransactionData({ transactionId: "transaction", identifier: "row", attachmentGuids: ["first", "second"] }), { attachmentGuids: ["first", "second"] });
     service.removeClient(messages);
     assert.equal(service.capabilities.stickerRows, false);
+});
+
+test("placement and sticker tapback protocols require their own connected helper capabilities", async () => {
+    const Service = serviceClass();
+    const service = Object.create(Service.prototype);
+    const writes = [];
+    const messages = { id: "messages", destroyed: false, write(data, callback) { writes.push(JSON.parse(data)); callback(); } };
+    const other = { id: "other", destroyed: false, write(data, callback) { writes.push({ other: true }); callback(); } };
+    service.clients = [messages, other]; service.activeClients = {}; service.log = { info() {}, debug() {} };
+    service.registerClient("com.apple.FaceTime", other, { stickerPlacement: true, stickerReactions: true });
+    service.registerClient("com.apple.MobileSMS", messages, { stickerSending: true, stickerPlacement: "true", stickerReactions: 1 });
+    for (const action of ["send-sticker-placement", "send-sticker-tapback", "remove-sticker-tapback"]) {
+        await service.writeData(action, {}); assert.equal(writes.length, 0);
+    }
+    service.registerClient("com.apple.MobileSMS", messages, { stickerPlacement: true, stickerReactions: true });
+    assert.equal(service.capabilities.stickerSending, false);
+    for (const action of ["send-sticker-placement", "send-sticker-tapback", "remove-sticker-tapback"]) await service.writeData(action, {});
+    assert.deepEqual(writes.map(frame => frame.action), ["send-sticker-placement", "send-sticker-tapback", "remove-sticker-tapback"]);
+    service.removeClient(messages);
+    assert.equal(service.capabilities.stickerPlacement, false); assert.equal(service.capabilities.stickerReactions, false);
+});
+
+test("sticker action fields enforce exact targets, bounded geometry, no transfer-path/removal uploads", () => {
+    const base = { chatGuid: "chat", tempGuid: "action", selectedMessageGuid: "target", partIndex: "0", name: "fixture.png" };
+    const placement = { x: -4, y: 4, scale: 0.01, rotation: 2 * Math.PI, parentWidth: 4096 };
+    assert.deepEqual(stickers.parseStickerActionFields({ ...base, placement: JSON.stringify(placement) }, "placement"), {
+        selectedMessageGuid: "target", partIndex: 0, placement
+    });
+    assert.deepEqual(stickers.parseStickerActionFields(base, "tapback"), { selectedMessageGuid: "target", partIndex: 0 });
+    for (const partIndex of [true, false, -1, 0.5, "00", "1.5", " 0", undefined, 2147483648])
+        assert.throws(() => stickers.parseStickerActionFields({ ...base, partIndex }, "tapback"));
+    for (const extra of ["transferGuid", "filePath", "reactionGuid", "placement", "isAudioMessage", "row"])
+        assert.throws(() => stickers.parseStickerActionFields({ ...base, [extra]: "unsupported" }, "tapback"));
+    for (const [key, value] of [["x", 4.1], ["y", -4.1], ["scale", 0], ["scale", 4.1], ["rotation", 7], ["parentWidth", 0],
+        ["parentWidth", 4097], ["x", true], ["scale", "1"], ["rotation", Infinity], ["extra", 0]])
+        assert.throws(() => stickers.parseStickerActionFields({ ...base, placement: { ...placement, [key]: value } }, "placement"));
+    const removal = { chatGuid: "chat", tempGuid: "remove", selectedMessageGuid: "target", partIndex: 0, reactionGuid: "reaction" };
+    assert.equal(stickers.parseStickerActionFields(removal, "remove").reactionGuid, "reaction");
+    for (const extra of ["name", "stickerLabel", "filePath", "transferGuid", "placement"])
+        assert.throws(() => stickers.parseStickerActionFields({ ...removal, [extra]: "unsupported" }, "remove"));
+    for (const path of ["p:0/target", "target\u0000", "", "x".repeat(257)])
+        assert.throws(() => stickers.parseStickerActionFields({ ...base, selectedMessageGuid: path }, "tapback"));
+    for (const suffix of ["send-sticker-placement", "send-sticker-tapback", "remove-sticker-tapback"])
+        assert.equal(stickers.isStickerRequest("POST", `/API/V1/MESSAGE/${suffix.toUpperCase()}/`), true);
+});
+
+test("associated sticker confirmation keeps placements, auto-layout placements and tapback slots distinct", () => {
+    const target = { selectedMessageGuid: "target", partIndex: 0 };
+    const autoLayout = Buffer.from("YnBsaXN0MDDUAQIDBAUGBwhTcGlkU3NpZFNzaXJTc3B2XnN5bnRoZXRpYy5wYWNrXxAPc3ludGhldGljLmFzc2V0CRAACBEVGR0hMEJDAAAAAAAAAQEAAAAAAAAACQAAAAAAAAAAAAAAAAAAAEU=", "base64");
+    const row = { guid: "sent", service: "iMessage", isFromMe: true, isSent: true, error: 0, dateCreated: new Date(),
+        chats: [{ guid: "chat", serviceName: "iMessage" }], associatedMessageGuid: "p:0/target", associatedMessageType: "sticker",
+        attachments: [{ guid: "asset", isSticker: true, isOutgoing: false, stickerUserInfo: autoLayout }] };
+    assert.equal(stickers.matchesSentStickerAction(row, "sent", "chat", 0, "placement", target), true);
+    assert.equal(stickers.matchesSentStickerAction(row, "sent", "chat", 0, "tapback", target), false);
+    assert.equal(safeMetadata.normalizeStickerMetadata(row.attachments[0]).placement.sir, true);
+    assert.equal(safeMetadata.normalizeStickerMetadata(row.attachments[0]).placement.spv, 0);
+    const tapback = { ...row, associatedMessageType: "sticker-reaction" };
+    assert.equal(stickers.matchesSentStickerAction(tapback, "sent", "chat", 0, "tapback", target), true);
+    for (const change of [{ guid: "other" }, { service: "SMS" }, { isFromMe: false }, { isSent: false }, { error: 1 },
+        { dateCreated: new Date(0) }, { chats: [{ guid: "other", serviceName: "iMessage" }] },
+        { associatedMessageGuid: "p:1/target" }, { associatedMessageGuid: "p:0/other" },
+        { associatedMessageType: "sticker" }, { attachments: [] }, { attachments: [{ guid: "asset", isSticker: false }] }])
+        assert.equal(stickers.matchesSentStickerAction({ ...tapback, ...change }, "sent", "chat", 1, "tapback", target), false);
+    assert.equal(stickers.matchesSentStickerAction({ ...tapback, associatedMessageGuid: "bp:target" }, "sent", "chat", 0, "tapback", target), true);
+    assert.equal(stickers.matchesSentStickerAction({ ...tapback, associatedMessageGuid: "bp:target" }, "sent", "chat", 0, "tapback", { ...target, partIndex: 1 }), false);
+    const removed = { ...tapback, associatedMessageType: "-sticker-reaction", attachments: [] };
+    assert.equal(stickers.matchesSentStickerAction(removed, "sent", "chat", 0, "remove", target, ["asset"]), true);
+    assert.equal(stickers.matchesSentStickerAction({ ...removed, attachments: row.attachments }, "sent", "chat", 0, "remove", target, ["asset"]), true);
+    assert.equal(stickers.matchesSentStickerAction({ ...removed, attachments: row.attachments }, "sent", "chat", 0, "remove", target, ["other"]), false);
+});
+
+test("sticker target validation rejects cross-chat, missing/retracted parts and associated rows", () => {
+    const target = { selectedMessageGuid: "target", partIndex: 1 };
+    const selected = { guid: "target", service: "iMessage", isFromMe: false, partCount: 2,
+        chats: [{ guid: "chat", serviceName: "iMessage" }], attributedBody: [{ runs: [0, 1].map(index => ({
+            attributes: { __kIMMessagePartAttributeName: index }
+        })) }] };
+    assert.doesNotThrow(() => stickers.validateStickerTarget(selected, "chat", target));
+    for (const change of [{ guid: "other" }, { service: "SMS" }, { partCount: 1 }, { partCount: 0 },
+        { chats: [] }, { associatedMessageGuid: "p:0/other" }, { isFullyUnsent: true }, { retractedParts: [1] },
+        { partCount: undefined, attributedBody: [{ runs: [{ attributes: { __kIMMessagePartAttributeName: 0 } }] }] }])
+        assert.throws(() => stickers.validateStickerTarget({ ...selected, ...change }, "chat", target));
+    assert.doesNotThrow(() => stickers.validateStickerTarget({ ...selected,
+        attributedBody: [{ runs: [{ attributes: { __kIMMessagePartAttributeName: 0 } }] }] }, "chat", target));
+});
+
+test("sticker action validators require exactly one bounded upload, while removal rejects all uploads", async () => {
+    const Validator = validator({ httpService: { sendCache: { find: () => null } } });
+    const parsed = await parseMultipart([["attachment", png()]]);
+    const base = { chatGuid: "chat", tempGuid: "validated-action", selectedMessageGuid: "target", partIndex: "0", name: "fixture.png" };
+    try {
+        await Validator.validateStickerTapback({ request: { body: base, files: parsed.files } }, async () => {});
+        await Validator.validateStickerPlacement({ request: { body: { ...base, placement: JSON.stringify({ x: 0, y: 0, scale: 1, rotation: 0, parentWidth: 400 }) }, files: parsed.files } }, async () => {});
+        await assert.rejects(Validator.validateStickerTapback({ request: { body: base, files: { attachment: [parsed.files.attachment, parsed.files.attachment] } } }, async () => {}));
+        const removal = { chatGuid: "chat", tempGuid: "validated-remove", selectedMessageGuid: "target", partIndex: 0, reactionGuid: "reaction" };
+        await Validator.validateStickerRemoval({ request: { body: removal } }, async () => {});
+        await assert.rejects(Validator.validateStickerRemoval({ request: { body: removal, files: parsed.files } }, async () => {}));
+    } finally { for (const file of parsed.openedFiles) stickers.removeStickerUpload(file.path); }
+});
+
+test("native placement and tapback helper payloads omit temporary IDs and caller transfer identifiers", async () => {
+    const writes = [];
+    const capabilities = { stickerPlacement: false, stickerReactions: false };
+    class Action {
+        constructor(api) { this.api = api; }
+        throwForNoMissingFields() {}
+        async sendApiMessage(action, data) { writes.push({ action, data }); return { identifier: "sent" }; }
+    }
+    const { PrivateApiAttachment } = load("api/privateApi/apis/PrivateApiAttachment.ts", {
+        "@server": {}, ".": { PrivateApiAction: Action },
+        "@server/managers/transactionManager/transactionPromise": { TransactionPromise: class {}, TransactionType: { ATTACHMENT: 2 } }
+    });
+    const api = new PrivateApiAttachment({ capabilities });
+    const target = { chatGuid: "chat", selectedMessageGuid: "target", partIndex: 0 };
+    const asset = { ...target, filePath: "/synthetic/staged.png", filename: "fixture.png", stickerLabel: "Fixture" };
+    const placement = { x: 0, y: 0, scale: 1, rotation: 0, parentWidth: 400 };
+    await assert.rejects(api.sendStickerAction("placement", { ...asset, placement }), /not supported/);
+    await assert.rejects(api.sendStickerAction("tapback", asset), /not supported/);
+    await assert.rejects(api.removeStickerTapback({ ...target, reactionGuid: "reaction" }), /not supported/);
+    capabilities.stickerPlacement = true; capabilities.stickerReactions = true;
+    await api.sendStickerAction("placement", { ...asset, placement, tempGuid: "not-on-wire", transferGuid: "not-on-wire" });
+    await api.sendStickerAction("tapback", { ...asset, placement, tempGuid: "not-on-wire" });
+    await api.removeStickerTapback({ ...target, reactionGuid: "reaction", filePath: "not-on-wire", transferGuid: "not-on-wire" });
+    assert.deepEqual(writes, [{ action: "send-sticker-placement", data: { ...asset, placement } },
+        { action: "send-sticker-tapback", data: asset }, { action: "remove-sticker-tapback", data: { ...target, reactionGuid: "reaction" } }]);
 });
 
 test("native attempts block duplicates without evicting unknown outcomes", () => {
@@ -908,6 +1035,118 @@ test("row send stages every asset before one dispatch and retains uncertain atte
         for (const { filename, directory } of created) {
             if (fs.existsSync(filename)) fs.unlinkSync(filename);
             if (fs.existsSync(directory)) fs.rmdirSync(directory);
+        }
+        fs.rmdirSync(staging);
+    }
+});
+
+test("native associated sends reuse staging, ownership checks and non-retryable attempt IDs", async () => {
+    const state = load("api/stickers.ts");
+    const parsed = await parseMultipart([["attachment", png()]]);
+    const staging = fs.mkdtempSync(path.join(os.tmpdir(), "native-sticker-action-stage-"));
+    const created = []; const cached = new Set(); const calls = [];
+    let mode = "success"; let release; let resultRow;
+    const selected = { guid: "target", service: "iMessage", partCount: 1, isFromMe: false,
+        chats: [{ guid: "chat", serviceName: "iMessage" }] };
+    const makeRow = type => ({ guid: "sent", service: "iMessage", isFromMe: true, isSent: true, error: 0, dateCreated: new Date(),
+        chats: selected.chats, associatedMessageGuid: "p:0/target", associatedMessageType: type,
+        attachments: [{ guid: "asset", isSticker: true, isOutgoing: false, stickerUserInfo: Buffer.from([1]) }] });
+    let reaction = { ...makeRow("sticker-reaction"), guid: "reaction" };
+    const server = { privateApi: { capabilities: { stickerPlacement: true, stickerReactions: true, stickerSending: false }, attachment: {
+        async sendStickerAction(action, data) {
+            calls.push({ action, data }); assert.deepEqual(fs.readFileSync(data.filePath), png());
+            assert.equal(data.selectedMessageGuid, "target"); assert.equal(data.partIndex, 0);
+            resultRow = makeRow(action === "placement" ? "sticker" : "sticker-reaction");
+            if (mode === "wrong-row") resultRow.associatedMessageGuid = "p:1/target";
+            if (mode === "error") throw new Error("private synthetic native error");
+            if (mode === "pending") return new Promise(resolve => { release = resolve; });
+            return mode === "missing-guid" ? {} : { identifier: "sent" };
+        },
+        async removeStickerTapback(data) {
+            calls.push({ action: "remove", data });
+            assert.deepEqual(data, { chatGuid: "chat", selectedMessageGuid: "target", partIndex: 0, reactionGuid: "reaction" });
+            if (mode === "replacement-race") throw new Error("private newer reaction details");
+            resultRow = { ...makeRow("-sticker-reaction"), attachments: [] };
+            if (mode === "wrong-row") resultRow.isFromMe = false;
+            return mode === "missing-guid" ? {} : { identifier: "sent" };
+        }
+    } }, iMessageRepo: {
+        async getChats() { return [[{ guid: "chat", serviceName: "iMessage" }], 1]; },
+        async getMessage(guid, chats, attachments) {
+            assert.equal(chats, true); assert.equal(attachments, true);
+            return guid === "target" ? selected : guid === "reaction" ? reaction : guid === "sent" ? resultRow : null;
+        }
+    }, httpService: { sendCache: { find: guid => cached.has(guid), add: guid => cached.add(guid) } } };
+    const { MessageInterface } = load("api/interfaces/messageInterface.ts", {
+        "@server": { Server: () => server }, "@server/api/stickers": state,
+        "@server/fileSystem": { FileSystem: { copyAttachment(source, name) {
+            const directory = fs.mkdtempSync(path.join(staging, "asset-")); const filename = path.join(directory, name);
+            fs.copyFileSync(source, filename); created.push({ filename, directory }); return filename;
+        }, getRealPath: value => value } }, "@server/helpers/utils": { checkPrivateApiStatus() {}, resultAwaiter: async ({ getData }) => getData() },
+        "@server/managers/outgoingMessageManager/messagePromise": {}, "@server/databases/imessage/entity/Message": {},
+        "@server/env": {}, "@server/api/apple/mappings": {}, "@server/api/http/constants": {},
+        "@server/api/apple/actions": {}, "@server/api/reactions": {}, rimraf: {}, "@server/databases/imessage/entity/Chat": {}
+    });
+    const base = { chatGuid: "chat", tempGuid: "placement", selectedMessageGuid: "target", partIndex: 0,
+        name: "fixture.png", attachmentPath: parsed.files.attachment.path };
+    const placement = { x: 0.5, y: 0.25, scale: 1, rotation: 0, parentWidth: 400 };
+    const removal = { chatGuid: "chat", tempGuid: "remove", selectedMessageGuid: "target", partIndex: 0, reactionGuid: "reaction" };
+    try {
+        server.privateApi.capabilities.stickerPlacement = false;
+        await assert.rejects(MessageInterface.sendStickerAction("placement", { ...base, placement }), /not supported/);
+        assert.equal(created.length, 0); assert.equal(state.hasStickerAttempt(base.tempGuid), false);
+        server.privateApi.capabilities.stickerPlacement = true;
+        selected.chats = [{ guid: "other", serviceName: "iMessage" }];
+        await assert.rejects(MessageInterface.sendStickerAction("placement", { ...base, placement }), /requested iMessage chat/);
+        selected.chats = [{ guid: "chat", serviceName: "iMessage" }];
+        await assert.rejects(MessageInterface.sendStickerAction("tapback", { ...base, partIndex: 1 }), /part does not exist/);
+        assert.equal(created.length, 0); assert.equal(calls.length, 0);
+        assert.equal((await MessageInterface.sendStickerAction("placement", { ...base, placement })).associatedMessageType, "sticker");
+        assert.equal(fs.existsSync(created[0].filename), false);
+        assert.deepEqual(calls[0].data.placement, placement);
+        for (const tempGuid of ["tapback-add", "tapback-replace"]) {
+            assert.equal((await MessageInterface.sendStickerAction("tapback", { ...base, tempGuid })).associatedMessageType, "sticker-reaction");
+            assert.equal(calls.at(-1).data.placement, undefined);
+        }
+        mode = "pending";
+        const pending = MessageInterface.sendStickerAction("tapback", { ...base, tempGuid: "concurrent" });
+        await new Promise(resolve => setImmediate(resolve));
+        const before = calls.length;
+        await assert.rejects(MessageInterface.sendStickerAction("tapback", { ...base, tempGuid: "concurrent" }), /already queued/);
+        assert.equal(calls.length, before); release({ identifier: "sent" }); await pending;
+        for (mode of ["wrong-row", "error", "missing-guid"]) {
+            const tempGuid = `uncertain-${mode}`;
+            await assert.rejects(MessageInterface.sendStickerAction("tapback", { ...base, tempGuid }), error => {
+                assert.equal(error instanceof state.StickerUnconfirmedError, true); assert.equal(error.message.includes("private"), false); return true;
+            });
+            assert.equal(fs.existsSync(created.at(-1).filename), true);
+            cached.clear(); assert.equal(state.hasStickerAttempt(tempGuid), true);
+            await assert.rejects(MessageInterface.sendStickerAction("tapback", { ...base, tempGuid }), /already queued/);
+        }
+        const beforeRemoval = created.length;
+        const owned = { ...makeRow("sticker-reaction"), guid: "reaction" };
+        for (const change of [{ isFromMe: false }, { associatedMessageType: "sticker" }, { associatedMessageType: "emoji" },
+            { associatedMessageGuid: "p:1/target" }, { chats: [] }, { attachments: [] }]) {
+            reaction = { ...owned, ...change };
+            await assert.rejects(MessageInterface.removeStickerTapback(removal), /owned sticker tapback/);
+            assert.equal(state.hasStickerAttempt(removal.tempGuid), false);
+        }
+        reaction = owned; mode = "success";
+        assert.equal((await MessageInterface.removeStickerTapback(removal)).associatedMessageType, "-sticker-reaction");
+        assert.equal(created.length, beforeRemoval);
+        await assert.rejects(MessageInterface.removeStickerTapback(removal), /already queued/);
+        for (mode of ["replacement-race", "wrong-row", "missing-guid"]) {
+            const tempGuid = `remove-${mode}`;
+            await assert.rejects(MessageInterface.removeStickerTapback({ ...removal, tempGuid }), error => {
+                assert.equal(error instanceof state.StickerUnconfirmedError, true); assert.equal(error.message.includes("private"), false); return true;
+            });
+            cached.clear(); assert.equal(state.hasStickerAttempt(tempGuid), true);
+            await assert.rejects(MessageInterface.removeStickerTapback({ ...removal, tempGuid }), /already queued/);
+        }
+    } finally {
+        for (const file of parsed.openedFiles) state.removeStickerUpload(file.path);
+        for (const { filename, directory } of created) {
+            if (fs.existsSync(filename)) fs.unlinkSync(filename); if (fs.existsSync(directory)) fs.rmdirSync(directory);
         }
         fs.rmdirSync(staging);
     }

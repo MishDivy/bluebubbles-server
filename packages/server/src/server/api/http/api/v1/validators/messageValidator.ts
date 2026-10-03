@@ -14,11 +14,47 @@ import {
     hasStickerAttempt,
     MAX_STICKER_BYTES
 } from "@server/api/stickers";
+import { parseStickerActionFields } from "@server/api/stickers";
 
 import { ValidateInput } from "./index";
 import { BadRequest } from "../responses/errors";
 
 export class MessageValidator {
+    private static validateSingleStickerUpload(ctx: RouterContext) {
+        const files = ctx.request?.files;
+        const attachment = files?.attachment as File;
+        if (!files || Object.keys(files).length !== 1 || !attachment || Array.isArray(attachment) ||
+            attachment.size < 1 || attachment.size > MAX_STICKER_BYTES)
+            throw new Error("Provide exactly one sticker image of at most 500 KiB.");
+        readStickerUpload(attachment.path, ctx.request.body.name);
+    }
+
+    static async validateStickerPlacement(ctx: RouterContext, next: Next) {
+        return MessageValidator.validateStickerAction(ctx, next, "placement");
+    }
+
+    static async validateStickerTapback(ctx: RouterContext, next: Next) {
+        return MessageValidator.validateStickerAction(ctx, next, "tapback");
+    }
+
+    static async validateStickerRemoval(ctx: RouterContext, next: Next) {
+        return MessageValidator.validateStickerAction(ctx, next, "remove");
+    }
+
+    private static async validateStickerAction(ctx: RouterContext, next: Next, action: "placement" | "tapback" | "remove") {
+        try {
+            parseStickerActionFields(ctx.request?.body, action);
+            if (action === "remove") {
+                if (Object.keys(ctx.request?.files ?? {}).length) throw new Error("Sticker removal does not accept uploads.");
+            } else MessageValidator.validateSingleStickerUpload(ctx);
+            if (Server().httpService.sendCache.find(ctx.request.body.tempGuid) || hasStickerAttempt(ctx.request.body.tempGuid))
+                throw new Error("This temporary GUID is already queued.");
+        } catch {
+            throw new BadRequest({ error: "Invalid native sticker action or duplicate temporary GUID." });
+        }
+        await next();
+    }
+
     static async validateStickerRow(ctx: RouterContext, next: Next) {
         try {
             const descriptors = parseStickerRowFields(ctx.request?.body);
@@ -39,19 +75,7 @@ export class MessageValidator {
     static async validateSticker(ctx: RouterContext, next: Next) {
         try {
             validateStickerFields(ctx.request?.body);
-            const files = ctx.request?.files;
-            const attachment = files?.attachment as File;
-            if (
-                !files ||
-                Object.keys(files).length !== 1 ||
-                !attachment ||
-                Array.isArray(attachment) ||
-                attachment.size < 1 ||
-                attachment.size > MAX_STICKER_BYTES
-            ) {
-                throw new Error("Provide exactly one sticker image of at most 500 KiB.");
-            }
-            readStickerUpload(attachment.path, ctx.request.body.name);
+            MessageValidator.validateSingleStickerUpload(ctx);
             if (
                 Server().httpService.sendCache.find(ctx.request.body.tempGuid) ||
                 hasStickerAttempt(ctx.request.body.tempGuid)

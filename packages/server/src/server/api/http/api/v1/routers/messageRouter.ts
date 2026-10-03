@@ -15,9 +15,45 @@ import { FileStream, Success } from "../responses/success";
 import { BadRequest, IMessageError, NotFound } from "../responses/errors";
 import { parseWithQuery } from "../utils";
 import { isMinVentura } from "@server/env";
-import { StickerUnconfirmedError, parseStickerRowFields } from "@server/api/stickers";
+import { StickerUnconfirmedError, parseStickerRowFields, parseStickerActionFields } from "@server/api/stickers";
 
 export class MessageRouter {
+    static async sendStickerPlacement(ctx: RouterContext, _: Next) {
+        return MessageRouter.stickerAction(ctx, "placement");
+    }
+
+    static async sendStickerTapback(ctx: RouterContext, _: Next) {
+        return MessageRouter.stickerAction(ctx, "tapback");
+    }
+
+    static async removeStickerTapback(ctx: RouterContext, _: Next) {
+        return MessageRouter.stickerAction(ctx, "remove");
+    }
+
+    private static async stickerAction(ctx: RouterContext, action: "placement" | "tapback" | "remove") {
+        let confirmed = false;
+        try {
+            const { chatGuid, tempGuid, name, stickerLabel } = ctx.request.body;
+            const target = parseStickerActionFields(ctx.request.body, action);
+            const message = action === "remove"
+                ? await MessageInterface.removeStickerTapback({ chatGuid, tempGuid, selectedMessageGuid: target.selectedMessageGuid,
+                    partIndex: target.partIndex, reactionGuid: target.reactionGuid })
+                : await MessageInterface.sendStickerAction(action, { chatGuid, tempGuid, name, stickerLabel,
+                    selectedMessageGuid: target.selectedMessageGuid, partIndex: target.partIndex,
+                    ...(action === "placement" ? { placement: target.placement } : {}),
+                    attachmentPath: (ctx.request.files.attachment as File).path });
+            confirmed = true;
+            const data = await MessageSerializer.serialize({ message, config: { loadChatParticipants: false,
+                parseAttributedBody: true, parseMessageSummary: true, parsePayloadData: true } });
+            return new Success(ctx, { message: "Sticker action confirmed!", data }).send();
+        } catch (error) {
+            if (confirmed || error instanceof StickerUnconfirmedError) throw new IMessageError({
+                message: "Sticker action not confirmed", error: "Check the chat before sending again. Automatic retry is disabled."
+            });
+            throw new BadRequest({ error: "Native sticker action rejected. Verify capability, target ownership, iMessage chat and upload bounds." });
+        }
+    }
+
     static async sendStickerRow(ctx: RouterContext, _: Next) {
         const { chatGuid, tempGuid } = ctx.request.body;
         let confirmed = false;

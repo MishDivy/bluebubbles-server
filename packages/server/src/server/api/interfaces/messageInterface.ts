@@ -37,6 +37,11 @@ import {
     matchesSentStickerBatch,
     parseStickerRowFields,
     MAX_STICKER_ROW_BYTES,
+    parseStickerActionFields,
+    validateStickerTarget,
+    matchesSentStickerAction,
+    StickerTarget,
+    StickerPlacement,
     StickerUnconfirmedError
 } from "@server/api/stickers";
 
@@ -69,11 +74,59 @@ export class MessageInterface {
         return MessageInterface.sendStickerBatch(chatGuid, tempGuid, stickers);
     }
 
+    static async sendStickerAction(action: "placement" | "tapback", request: StickerTarget & {
+        chatGuid: string; tempGuid: string; name: string; stickerLabel?: string;
+        attachmentPath: string; placement?: StickerPlacement;
+    }): Promise<Message> {
+        const { attachmentPath, ...fields } = request;
+        const target = parseStickerActionFields(fields, action);
+        return MessageInterface.sendStickerBatch(request.chatGuid, request.tempGuid,
+            [{ attachmentPath, name: request.name, stickerLabel: request.stickerLabel }], { action, ...target });
+    }
+
+    static async removeStickerTapback(request: StickerTarget & {
+        chatGuid: string; tempGuid: string; reactionGuid: string;
+    }): Promise<Message> {
+        const target = parseStickerActionFields(request, "remove");
+        checkPrivateApiStatus();
+        if (!Server().privateApi.capabilities.stickerReactions) throw new Error("Native sticker reactions are not supported by the connected Messages helper.");
+        const selected = await Server().iMessageRepo.getMessage(target.selectedMessageGuid, true, true);
+        validateStickerTarget(selected, request.chatGuid, target);
+        const reaction = await Server().iMessageRepo.getMessage(target.reactionGuid, true, true);
+        if (!matchesSentStickerAction(reaction, target.reactionGuid, request.chatGuid, 0, "tapback", target))
+            throw new Error("Removal requires an owned sticker tapback on the exact target part.");
+        if (Server().httpService.sendCache.find(request.tempGuid) || hasStickerAttempt(request.tempGuid))
+            throw new Error("This temporary GUID is already queued.");
+        reserveStickerAttempt(request.tempGuid);
+        Server().httpService.sendCache.add(request.tempGuid);
+        const sentAt = Date.now() - 10000;
+        try {
+            const result = await Server().privateApi.attachment.removeStickerTapback({
+                chatGuid: request.chatGuid, selectedMessageGuid: target.selectedMessageGuid,
+                partIndex: target.partIndex, reactionGuid: target.reactionGuid
+            });
+            if (typeof result?.identifier !== "string" || !result.identifier) throw new Error("No constructed message GUID.");
+            const matches = (message: Message) => matchesSentStickerAction(message, result.identifier, request.chatGuid,
+                sentAt, "remove", target, [reaction.attachments[0].guid]);
+            const message = await resultAwaiter({ maxWaitMs: 60000, getData: async () => {
+                const row = await Server().iMessageRepo.getMessage(result.identifier, true, true);
+                return matches(row) ? row : null;
+            } });
+            if (!matches(message)) throw new Error("Removal was not confirmed.");
+            return message;
+        } catch {
+            throw new StickerUnconfirmedError("Sticker removal outcome is unknown. Check the chat before sending again.");
+        }
+    }
+
     private static async sendStickerBatch(chatGuid: string, tempGuid: string,
-        stickers: { attachmentPath: string; name: string; stickerLabel?: string }[]): Promise<Message> {
+        stickers: { attachmentPath: string; name: string; stickerLabel?: string }[],
+        target?: StickerTarget & { action: "placement" | "tapback"; placement?: StickerPlacement }): Promise<Message> {
         checkPrivateApiStatus();
         const rowSend = stickers.length > 1;
-        if (!(rowSend ? Server().privateApi.capabilities.stickerRows : Server().privateApi.capabilities.stickerSending))
+        const capability = target ? (target.action === "placement" ? "stickerPlacement" : "stickerReactions")
+            : rowSend ? "stickerRows" : "stickerSending";
+        if (!Server().privateApi.capabilities[capability])
             throw new Error("Native sticker sending is not supported by the connected Messages helper.");
         const [chats] = await Server().iMessageRepo.getChats({
             chatGuid,
@@ -83,6 +136,7 @@ export class MessageInterface {
         if (chats.length !== 1 || chats[0].guid !== chatGuid || chats[0].serviceName !== "iMessage") {
             throw new Error("Native stickers require an existing iMessage chat.");
         }
+        if (target) validateStickerTarget(await Server().iMessageRepo.getMessage(target.selectedMessageGuid, true, true), chatGuid, target);
         const sources = stickers.map(sticker => readStickerUpload(sticker.attachmentPath, sticker.name));
         if (sources.reduce((total, bytes) => total + bytes.length, 0) > MAX_STICKER_ROW_BYTES) throw new Error("Sticker row exceeds 5 MiB.");
         if (Server().httpService.sendCache.find(tempGuid) || hasStickerAttempt(tempGuid))
@@ -125,7 +179,11 @@ export class MessageInterface {
         const sentAt = Date.now() - 10000;
         let result: TransactionResult;
         try {
-            result = rowSend
+            result = target
+                ? await Server().privateApi.attachment.sendStickerAction(target.action, {
+                    chatGuid, ...prepared[0], selectedMessageGuid: target.selectedMessageGuid,
+                    partIndex: target.partIndex, ...(target.action === "placement" ? { placement: target.placement } : {})
+                }) : rowSend
                 ? await Server().privateApi.attachment.sendStickerRow({ chatGuid, stickers: prepared })
                 : await Server().privateApi.attachment.sendSticker({ chatGuid, ...prepared[0] });
         } catch {
@@ -140,18 +198,21 @@ export class MessageInterface {
             throw new StickerUnconfirmedError("Sticker row send outcome is unknown. Check the chat before sending again.");
         }
         let message: Message;
+        const matches = (row: Message) => target
+            ? matchesSentStickerAction(row, result.identifier, chatGuid, sentAt, target.action, target)
+            : matchesSentStickerBatch(row, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids);
         try {
             message = await resultAwaiter({
                 maxWaitMs: 60000,
                 getData: async () => {
                     const row = await Server().iMessageRepo.getMessage(result.identifier, true, true);
-                    return matchesSentStickerBatch(row, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids) ? row : null;
+                    return matches(row) ? row : null;
                 }
             });
         } catch {
             throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
         }
-        if (!matchesSentStickerBatch(message, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids)) {
+        if (!matches(message)) {
             throw new StickerUnconfirmedError("Sticker send was not confirmed. Check the chat before sending again.");
         }
         if (rowSend) message.verifiedStickerLayout = { attachmentGuids: [...expectedGuids], partIndex: 0 };

@@ -9,9 +9,17 @@ export const stickerRowMultipartLimits = { ...stickerMultipartLimits, maxFileSiz
 
 export type StickerDescriptor = { name: string; stickerLabel?: string };
 export type StickerLayout = { attachmentGuids: string[]; partIndex: 0 };
+export type StickerPlacement = { x: number; y: number; scale: number; rotation: number; parentWidth: number };
+export type StickerAction = "placement" | "tapback" | "remove";
+export type StickerTarget = { selectedMessageGuid: string; partIndex: number };
+
+export function isStickerRequest(method: string, pathname: string): boolean {
+    return isStickerUploadRequest(method, pathname) ||
+        (method === "POST" && /^\/api\/v1\/message\/remove-sticker-tapback\/?$/i.test(pathname));
+}
 
 export function isStickerUploadRequest(method: string, pathname: string): boolean {
-    return method === "POST" && /^\/api\/v1\/message\/send-sticker(?:-row)?\/?$/i.test(pathname);
+    return method === "POST" && /^\/api\/v1\/message\/send-sticker(?:-row|-placement|-tapback)?\/?$/i.test(pathname);
 }
 
 export function isStickerRowUploadRequest(method: string, pathname: string): boolean {
@@ -80,6 +88,58 @@ export function parseStickerRowFields(body: Record<string, unknown>): StickerDes
         validateStickerFields({ chatGuid: body.chatGuid, tempGuid: body.tempGuid, ...descriptor });
     }
     return descriptors;
+}
+
+export function parseStickerActionFields(body: Record<string, unknown>, action: StickerAction): StickerTarget & {
+    placement?: StickerPlacement;
+    reactionGuid?: string;
+} {
+    const fields = ["chatGuid", "tempGuid", "selectedMessageGuid", "partIndex", ...(action === "remove"
+        ? ["reactionGuid"] : ["name", "stickerLabel", ...(action === "placement" ? ["placement"] : [])])];
+    if (!body || Object.keys(body).some(key => !fields.includes(key))) throw new Error("Unsupported sticker action fields.");
+    validateStickerFields({ chatGuid: body.chatGuid, tempGuid: body.tempGuid,
+        name: action === "remove" ? "sticker.png" : body.name,
+        ...(action !== "remove" && body.stickerLabel != null ? { stickerLabel: body.stickerLabel } : {}) });
+    const requireGuid = (value: unknown) => {
+        if (typeof value !== "string" || !value.trim() || value.length > 256 || /[\/\x00-\x1f\x7f]/.test(value))
+            throw new Error("An exact message GUID is required.");
+        return value;
+    };
+    const selectedMessageGuid = requireGuid(body.selectedMessageGuid);
+    const partIndex = typeof body.partIndex === "string" && /^(?:0|[1-9]\d{0,9})$/.test(body.partIndex)
+        ? Number(body.partIndex) : body.partIndex;
+    if (typeof partIndex !== "number" || !Number.isInteger(partIndex) || partIndex < 0 || partIndex > 2147483647)
+        throw new Error("A nonnegative message part index is required.");
+    if (action === "remove") return { selectedMessageGuid, partIndex, reactionGuid: requireGuid(body.reactionGuid) };
+    if (action !== "placement") return { selectedMessageGuid, partIndex };
+    const placement = typeof body.placement === "string" && Buffer.byteLength(body.placement, "utf8") <= 8192
+        ? JSON.parse(body.placement) : body.placement;
+    if (!placement || Array.isArray(placement) || typeof placement !== "object" ||
+        Object.keys(placement).length !== 5 || Object.keys(placement).some(key => !["x", "y", "scale", "rotation", "parentWidth"].includes(key)) ||
+        Object.values(placement).some(value => typeof value !== "number" || !Number.isFinite(value)) ||
+        placement.x < -4 || placement.x > 4 || placement.y < -4 || placement.y > 4 ||
+        placement.scale < 0.01 || placement.scale > 4 || Math.abs(placement.rotation) > 2 * Math.PI ||
+        placement.parentWidth < 1 || placement.parentWidth > 4096) throw new Error("Invalid sticker placement geometry.");
+    return { selectedMessageGuid, partIndex, placement };
+}
+
+export function matchesStickerTarget(message: any, target: StickerTarget): boolean {
+    return message?.associatedMessageGuid === `p:${target.partIndex}/${target.selectedMessageGuid}` ||
+        (target.partIndex === 0 && message?.associatedMessageGuid === `bp:${target.selectedMessageGuid}`);
+}
+
+export function validateStickerTarget(message: any, chatGuid: string, target: StickerTarget) {
+    if (message?.guid !== target.selectedMessageGuid || message?.service !== "iMessage" ||
+        !message.chats?.some((chat: any) => chat.guid === chatGuid && chat.serviceName === "iMessage") ||
+        message.associatedMessageGuid || message.isFullyUnsent ||
+        (Array.isArray(message.retractedParts) && message.retractedParts.includes(target.partIndex)))
+        throw new Error("Sticker target must be a visible message in the requested iMessage chat.");
+    const hasPartCount = Number.isInteger(message.partCount);
+    if (hasPartCount && (message.partCount < 1 || target.partIndex >= message.partCount))
+        throw new Error("Sticker target part does not exist.");
+    const knownParts = (message.attributedBody ?? []).flatMap((body: any) => (body?.runs ?? [])
+        .map((run: any) => run?.attributes?.__kIMMessagePartAttributeName)).filter(Number.isInteger);
+    if (!hasPartCount && knownParts.length && !knownParts.includes(target.partIndex)) throw new Error("Sticker target part does not exist.");
 }
 
 export function reserveStickerAttempt(tempGuid: string) {
@@ -298,4 +358,17 @@ export function matchesSentStickerBatch(message: any, guid: string, chatGuid: st
                 stickerBodyRuns(message).every((run, index) => run.attributes.__kIMFileTransferGUIDAttributeName === expectedGuids[index] &&
                     (!filenames || run.attributes.__kIMFilenameAttributeName === filenames[index]))))))
     );
+}
+
+export function matchesSentStickerAction(message: any, guid: string, chatGuid: string, sentAt: number,
+    action: StickerAction, target: StickerTarget, removedAttachmentGuids?: string[]): boolean {
+    const type = action === "placement" ? "sticker" : action === "tapback" ? "sticker-reaction" : "-sticker-reaction";
+    if (!matchesStickerTarget(message, target) || message.associatedMessageType !== type) return false;
+    if (action !== "remove") return matchesSentStickerBatch({ ...message, associatedMessageGuid: null }, guid, chatGuid, sentAt, 1);
+    return !!(message.guid === guid && message.isFromMe === true && message.service === "iMessage" &&
+        message.isSent === true && message.error === 0 && message.dateCreated instanceof Date &&
+        message.dateCreated.getTime() >= sentAt &&
+        message.chats?.some((chat: any) => chat.guid === chatGuid && chat.serviceName === "iMessage") &&
+        (message.attachments ?? []).every((attachment: any) => attachment?.isSticker === true &&
+            removedAttachmentGuids?.includes(attachment.guid)));
 }

@@ -4,7 +4,7 @@ import { Server as SocketServer, ServerOptions } from "socket.io";
 // HTTP libraries
 import KoaApp from "koa";
 import koaBody from "koa-body";
-import { isStickerUploadRequest, isStickerRowUploadRequest, stickerMultipartLimits, stickerRowMultipartLimits, removeStickerUpload } from "@server/api/stickers";
+import { isStickerRequest, isStickerRowUploadRequest, stickerMultipartLimits, stickerRowMultipartLimits, removeStickerUpload } from "@server/api/stickers";
 import koaJson from "koa-json";
 import KoaRouter from "koa-router";
 import koaCors from "koa-cors";
@@ -118,7 +118,7 @@ export class HttpService extends Loggable {
 
         // Increase size limits from the default 1mb
         this.koaApp.use(async (ctx, next) => {
-            const nativeStickerUpload = isStickerUploadRequest(ctx.method, ctx.path);
+            const nativeStickerUpload = isStickerRequest(ctx.method, ctx.path);
             try {
                 await koaBody({
                     jsonLimit: nativeStickerUpload ? "8kb" : "100mb",

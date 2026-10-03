@@ -453,6 +453,27 @@ export class HttpRoutes {
                     },
                     {
                         method: HttpMethod.POST,
+                        path: "send-sticker-placement",
+                        middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
+                        validators: [MessageValidator.validateStickerPlacement],
+                        controller: MessageRouter.sendStickerPlacement
+                    },
+                    {
+                        method: HttpMethod.POST,
+                        path: "send-sticker-tapback",
+                        middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
+                        validators: [MessageValidator.validateStickerTapback],
+                        controller: MessageRouter.sendStickerTapback
+                    },
+                    {
+                        method: HttpMethod.POST,
+                        path: "remove-sticker-tapback",
+                        middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
+                        validators: [MessageValidator.validateStickerRemoval],
+                        controller: MessageRouter.removeStickerTapback
+                    },
+                    {
+                        method: HttpMethod.POST,
                         path: "multipart",
                         validators: [MessageValidator.validateMultipart],
                         controller: MessageRouter.sendMultipartMessage
