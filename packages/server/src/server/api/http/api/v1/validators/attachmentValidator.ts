@@ -5,6 +5,14 @@ import { ValidateInput } from "./index";
 import { BadRequest } from "../responses/errors";
 
 export class AttachmentValidator {
+    static async validateStickerPreview(ctx: RouterContext, next: Next) {
+        if (typeof ctx.params.guid !== "string" || !ctx.params.guid || ctx.params.guid.length > 256 ||
+            /[\\/\x00-\x1f\x7f]/.test(ctx.params.guid) ||
+            Object.keys(ctx.request?.query ?? {}).some(key => !["password", "token", "guid"].includes(key)))
+            throw new BadRequest({ error: "Sticker preview requires an attachment GUID and only authentication parameters." });
+        await next();
+    }
+
     static findParamRules = {
         guid: "required|string"
     };

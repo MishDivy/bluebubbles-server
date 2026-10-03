@@ -1,0 +1,27 @@
+name: Sticker preview native checks
+
+on:
+    push:
+        branches: [feature/native-stickers]
+    pull_request:
+        paths:
+            - packages/server/native/sticker-preview/**
+            - packages/server/scripts/*sticker-preview.sh
+            - .github/workflows/sticker-preview-native.yml
+
+permissions:
+    contents: read
+
+jobs:
+    native:
+        if: github.repository == 'MishDivy/bluebubbles-server'
+        runs-on: macos-15
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              with:
+                  persist-credentials: false
+            - name: Synthetic ImageIO roundtrip and CLI checks
+              run: bash packages/server/scripts/test-sticker-preview.sh
+            - name: Compile both supported executable slices
+              run: bash packages/server/scripts/build-sticker-preview.sh

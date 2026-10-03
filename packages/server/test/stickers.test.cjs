@@ -15,9 +15,11 @@ function load(relative, overrides = {}) {
         cache.set(filename, module);
         const localRequire = name => {
             if (Object.hasOwn(overrides, name)) return overrides[name];
-            if (["fs", "os", "path"].includes(name)) return require(name);
+            if (["fs", "os", "path", "crypto", "child_process"].includes(name)) return require(name);
             if (name === "@server/api/stickers") return read(path.join(sourceRoot, "api/stickers.ts"));
             if (name === "@server/api/stickerMetadata") return read(path.join(sourceRoot, "api/stickerMetadata.ts"));
+            if (name === "@server/api/stickerPreview") return read(path.join(sourceRoot, "api/stickerPreview.ts"));
+            if (name === "../responses/types") return read(path.join(sourceRoot, "api/http/api/v1/responses/types.ts"));
             if (name === "bplist-parser") return require(name);
             throw new Error(`Unmocked dependency: ${name}`);
         };

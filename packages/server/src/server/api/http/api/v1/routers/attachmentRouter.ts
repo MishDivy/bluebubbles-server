@@ -9,10 +9,43 @@ import { convertAudio, convertImage } from "@server/databases/imessage/helpers/u
 import { isEmpty, isTruthyBool } from "@server/helpers/utils";
 import { AttachmentInterface } from "@server/api/interfaces/attachmentInterface";
 import { FileStream, Success } from "../responses/success";
-import { BadRequest, NotFound, ServerError } from "../responses/errors";
+import { BadRequest, NotFound, ServerError, HTTPError } from "../responses/errors";
+import { ErrorTypes } from "../responses/types";
 import { AttachmentSerializer } from "@server/api/serializers/AttachmentSerializer";
+import { StickerPreviewError } from "@server/api/stickerPreview";
 
 export class AttachmentRouter {
+    static async stickerPreview(ctx: RouterContext, _: Next) {
+        const attachment = await Server().iMessageRepo.getAttachment(ctx.params.guid);
+        if (!attachment || attachment.isSticker !== true || !attachment.filePath) throw new NotFound({ error: "Sticker artwork not found." });
+        let fd: number;
+        try {
+            const preview = await AttachmentInterface.getStickerPreview(attachment);
+            fd = fs.openSync(preview.filePath,
+                fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+            const stat = fs.fstatSync(fd);
+            if (!stat.isFile() || stat.size !== preview.bytes) throw new StickerPreviewError("invalid_output");
+            ctx.response.set("Cache-Control", "private, max-age=300");
+            ctx.response.set("Content-Length", String(preview.bytes));
+            ctx.response.set("ETag", `"${preview.etag}"`);
+            ctx.response.set("Access-Control-Expose-Headers", "ETag, X-BB-Sticker-Preview-Format, X-BB-Sticker-Preview-Frames, X-BB-Sticker-Preview-Width, X-BB-Sticker-Preview-Height, X-BB-Sticker-Preview-Has-Alpha");
+            ctx.response.set("X-BB-Sticker-Preview-Format", preview.format);
+            ctx.response.set("X-BB-Sticker-Preview-Frames", String(preview.frames));
+            ctx.response.set("X-BB-Sticker-Preview-Width", String(preview.width));
+            ctx.response.set("X-BB-Sticker-Preview-Height", String(preview.height));
+            ctx.response.set("X-BB-Sticker-Preview-Has-Alpha", String(preview.hasAlpha));
+            const stream = new FileStream(ctx, preview.filePath, "image/png", { fd });
+            fd = undefined;
+            return stream.send();
+        } catch (error) {
+            if (fd !== undefined) try { fs.closeSync(fd); } catch { /* The stream may already own the descriptor. */ }
+            const code = error instanceof StickerPreviewError ? error.code : "preview_unavailable";
+            const status = ["not_found", "input_unavailable"].includes(code) ? 404 : code === "input_too_large" ? 400
+                : code === "timeout" ? 504 : ["busy", "converter_unavailable", "cache_unavailable"].includes(code) ? 503 : 422;
+            throw new HTTPError({ status, message: "Sticker preview unavailable", error: { type: ErrorTypes.SERVER_ERROR, message: code } });
+        }
+    }
+
     static async count(ctx: RouterContext, _: Next) {
         const total = await Server().iMessageRepo.getAttachmentCount();
         return new Success(ctx, { data: { total } }).send();

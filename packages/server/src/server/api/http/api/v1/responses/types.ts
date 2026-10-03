@@ -1,6 +1,6 @@
 import * as fs from "fs";
 
-export type ValidStatuses = 200 | 201 | 400 | 401 | 403 | 404 | 500 | 504;
+export type ValidStatuses = 200 | 201 | 400 | 401 | 403 | 404 | 422 | 500 | 503 | 504;
 
 export type ResponseData = any;
 

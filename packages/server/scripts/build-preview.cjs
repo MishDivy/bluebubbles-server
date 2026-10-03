@@ -6,9 +6,19 @@ const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
 const helperRevision = "0a9072f1172bc46f1a33a2bc58b8df05cd8e81ef";
+const nativeStickerHelperRevision = "77227e5bbff6076b3f83a1887fe0092e705bd703";
 const productName = "BlueBubbles Preview";
 const bundleId = "com.mishdivy.bluebubbles-preview";
 const hash = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+function previewBuildProfile(name = "stable") {
+    if (name === "stable") return { name, helperRevision, helperDirectory: "messages", nativeStickers: false };
+    if (name === "native-stickers") return {
+        name, helperRevision: nativeStickerHelperRevision,
+        helperDirectory: "messages-experimental-stickers", nativeStickers: true
+    };
+    throw new Error("Build profile must be stable or native-stickers.");
+}
 
 function previewSigningOptions(options) {
     return {
@@ -20,7 +30,7 @@ function previewSigningOptions(options) {
     };
 }
 
-function previewConfig({ revision, helper, checksum, output }) {
+function previewConfig({ revision, helper, checksum, output, stickerPreview }) {
     if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error("Require a complete source revision.");
     const base = require("./electron-builder-config.js");
     return {
@@ -39,11 +49,13 @@ function previewConfig({ revision, helper, checksum, output }) {
                 filter: [
                     "**/*",
                     "!private-api/macos11/BlueBubblesHelper.dylib",
-                    "!private-api/macos11/BlueBubblesHelper.dylib.md5"
+                    "!private-api/macos11/BlueBubblesHelper.dylib.md5",
+                    "!macos/sticker-preview"
                 ]
             },
             { from: helper, to: "appResources/private-api/macos11/BlueBubblesHelper.dylib" },
-            { from: checksum, to: "appResources/private-api/macos11/BlueBubblesHelper.dylib.md5" }
+            { from: checksum, to: "appResources/private-api/macos11/BlueBubblesHelper.dylib.md5" },
+            ...(stickerPreview ? [{ from: stickerPreview, to: "appResources/macos/sticker-preview" }] : [])
         ],
         mac: {
             ...base.mac,
@@ -51,26 +63,38 @@ function previewConfig({ revision, helper, checksum, output }) {
             entitlementsInherit: path.join(__dirname, "entitlements.mac.plist"),
             target: [{ target: "dir", arch: ["arm64"] }],
             publish: null,
-            signIgnore: [...base.mac.signIgnore, "BlueBubblesHelper\\.dylib$"],
+            signIgnore: [...base.mac.signIgnore, "BlueBubblesHelper\\.dylib$",
+                ...(stickerPreview ? ["/appResources/macos/sticker-preview$"] : [])],
             // Sign only this newly built preview; no vendor bundle or certificate is used.
             sign: options => require("@electron/osx-sign").signAsync(previewSigningOptions(options))
         }
     };
 }
 
-async function buildPreview(helperRoot) {
+async function buildPreview(helperRoot, profileName = "stable") {
+    const profile = previewBuildProfile(profileName);
     if (process.platform !== "darwin" || process.arch !== "arm64")
         throw new Error("Requires an ARM64 macOS build runner.");
     const serverRoot = path.resolve(__dirname, "..");
     const repository = path.resolve(serverRoot, "../..");
     const revision = execFileSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const actualHelper = execFileSync("git", ["-C", helperRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    if (actualHelper !== helperRevision) throw new Error("Helper source revision differs from the reviewed build.");
-    const helper = path.resolve(helperRoot, "build/messages/BlueBubblesHelper.dylib");
+    if (actualHelper !== profile.helperRevision) throw new Error("Helper source revision differs from the reviewed build.");
+    const helper = path.resolve(helperRoot, "build", profile.helperDirectory, "BlueBubblesHelper.dylib");
     execFileSync("codesign", ["--verify", "--strict", helper]);
     const architectures = execFileSync("lipo", ["-archs", helper], { encoding: "utf8" }).trim().split(/\s+/);
     if (!architectures.includes("arm64") || !architectures.includes("arm64e"))
         throw new Error("Helper lacks required slices.");
+    let stickerPreview;
+    if (profile.nativeStickers) {
+        execFileSync("/bin/bash", [path.join(__dirname, "build-sticker-preview.sh")], { stdio: "inherit" });
+        stickerPreview = path.join(serverRoot, "appResources/macos/sticker-preview");
+        execFileSync("codesign", ["--force", "--sign", "-", "--timestamp=none", stickerPreview]);
+        execFileSync("codesign", ["--verify", "--strict", stickerPreview]);
+        const slices = execFileSync("lipo", ["-archs", stickerPreview], { encoding: "utf8" }).trim().split(/\s+/);
+        if (!slices.includes("arm64") || !slices.includes("x86_64"))
+            throw new Error("Sticker preview converter lacks required slices.");
+    }
     const output = path.join(serverRoot, "preview-artifacts");
     fs.mkdirSync(output, { recursive: true });
     const checksum = path.join(output, "BlueBubblesHelper.dylib.md5");
@@ -78,7 +102,7 @@ async function buildPreview(helperRoot) {
     fs.copyFileSync(path.join(__dirname, "preview-bootstrap.cjs"), path.join(serverRoot, "dist/preview-bootstrap.cjs"));
     fs.cpSync(path.join(repository, "packages/ui/build"), path.join(serverRoot, "dist"), { recursive: true });
     const builder = require("electron-builder");
-    const config = previewConfig({ revision, helper, checksum, output: path.join(output, "packaged") });
+    const config = previewConfig({ revision, helper, checksum, output: path.join(output, "packaged"), stickerPreview });
     const sign = config.mac.sign;
     let signingHookRan = false;
     config.mac.sign = async options => {
@@ -110,11 +134,19 @@ async function buildPreview(helperRoot) {
         "Contents/Resources/appResources/private-api/macos11/BlueBubblesHelper.dylib"
     );
     if (hash(embeddedHelper) !== hash(helper)) throw new Error("Packaged helper differs from the reviewed build.");
+    const embeddedStickerPreview = path.join(app, "Contents/Resources/appResources/macos/sticker-preview");
+    if (stickerPreview && hash(embeddedStickerPreview) !== hash(stickerPreview))
+        throw new Error("Packaged sticker preview converter differs from the reviewed build.");
+    if (!stickerPreview && fs.existsSync(embeddedStickerPreview))
+        throw new Error("Stable profile unexpectedly contains the experimental sticker converter.");
     const archive = path.join(output, "BlueBubbles-Preview-arm64.zip");
     execFileSync("ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, archive]);
     const manifest = {
         serverRevision: revision,
-        helperRevision,
+        helperRevision: profile.helperRevision,
+        buildProfile: profile.name,
+        experimentalStickers: profile.nativeStickers,
+        stickerPreviewSha256: stickerPreview ? hash(embeddedStickerPreview) : null,
         productName,
         bundleId,
         version: `1.9.9-preview.${revision.slice(0, 7)}`,
@@ -143,9 +175,9 @@ async function buildPreview(helperRoot) {
     console.log(JSON.stringify(manifest, null, 2));
 }
 
-module.exports = { previewConfig, previewSigningOptions, helperRevision };
+module.exports = { previewConfig, previewSigningOptions, previewBuildProfile, helperRevision };
 if (require.main === module)
-    buildPreview(process.argv[2]).catch(error => {
+    buildPreview(process.argv[2], process.argv[3]).catch(error => {
         console.error(error.message);
         process.exitCode = 1;
     });

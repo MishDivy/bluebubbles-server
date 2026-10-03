@@ -4,7 +4,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const ts = require("typescript");
 const { startPreview } = require("../scripts/preview-bootstrap.cjs");
-const { previewConfig, previewSigningOptions, helperRevision } = require("../scripts/build-preview.cjs");
+const { previewConfig, previewSigningOptions, previewBuildProfile, helperRevision } = require("../scripts/build-preview.cjs");
 
 test("packaging uses a distinct app, pinned helper and a newly generated archive", () => {
     const config = previewConfig({
@@ -25,8 +25,28 @@ test("packaging uses a distinct app, pinned helper and a newly generated archive
     assert.equal(config.mac.entitlementsInherit, config.mac.entitlements);
     assert.equal(config.mac.target[0].arch[0], "arm64");
     assert.equal(config.extraResources[1].from, "/fixture/helper");
+    assert.ok(config.extraResources[0].filter.includes("!macos/sticker-preview"));
+    assert.equal(config.extraResources.length, 3);
     assert.match(helperRevision, /^[a-f0-9]{40}$/);
     assert.throws(() => previewConfig({ revision: "short" }), /complete source/);
+});
+
+test("native stickers require an explicit build profile and separately verified converter", () => {
+    assert.deepEqual(previewBuildProfile(), {
+        name: "stable", helperRevision, helperDirectory: "messages", nativeStickers: false
+    });
+    const profile = previewBuildProfile("native-stickers");
+    assert.match(profile.helperRevision, /^[a-f0-9]{40}$/);
+    assert.notEqual(profile.helperRevision, helperRevision);
+    assert.equal(profile.nativeStickers, true);
+    assert.equal(profile.helperDirectory, "messages-experimental-stickers");
+    assert.throws(() => previewBuildProfile("typo"), /Build profile/);
+    const config = previewConfig({ revision: "b".repeat(40), helper: "/fixture/helper",
+        checksum: "/fixture/checksum", output: "/fixture/output", stickerPreview: "/fixture/converter" });
+    assert.deepEqual(config.extraResources[3], {
+        from: "/fixture/converter", to: "appResources/macos/sticker-preview"
+    });
+    assert.ok(config.mac.signIgnore.includes("/appResources/macos/sticker-preview$"));
 });
 
 test("bootstrap selects the existing private clone before any server module loads", () => {

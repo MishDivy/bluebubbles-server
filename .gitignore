@@ -10,3 +10,4 @@ release/
 .yarn
 .yarnrc*
 packages/server/preview-artifacts/
+packages/server/appResources/macos/sticker-preview

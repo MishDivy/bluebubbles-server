@@ -73,8 +73,8 @@ export class Success extends HTTPResponse {
 }
 
 export class FileStream extends HTTPResponse {
-    constructor(ctx: RouterContext, path: string, mimeType = "application/octet-stream") {
-        const src = fs.createReadStream(path);
+    constructor(ctx: RouterContext, path: string, mimeType = "application/octet-stream", options?: { fd: number }) {
+        const src = fs.createReadStream(path, options);
         ctx.response.set("Content-Type", mimeType as string);
         super(ctx, 200, src, "file");
     }

@@ -4,6 +4,11 @@ on:
     push:
         branches: [main, feature/custom-reactions]
     workflow_dispatch:
+        inputs:
+            native_stickers:
+                description: Build the experimental sticker candidate without deployment
+                type: boolean
+                default: false
 
 permissions:
     contents: read
@@ -15,14 +20,19 @@ jobs:
         timeout-minutes: 40
         env:
             CI: "false"
+            PREVIEW_BUILD_PROFILE: ${{ inputs.native_stickers && 'native-stickers' || 'stable' }}
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
               with:
                   persist-credentials: false
+            - name: Select the pinned build profile
+              id: profile
+              run: |
+                  node -e 'const p = require("./packages/server/scripts/build-preview.cjs").previewBuildProfile(process.env.PREVIEW_BUILD_PROFILE); require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `helper=${p.helperRevision}\nexperimental=${p.nativeStickers ? 1 : 0}\n`);'
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
               with:
                   repository: MishDivy/bluebubbles-helper
-                  ref: 0a9072f1172bc46f1a33a2bc58b8df05cd8e81ef
+                  ref: ${{ steps.profile.outputs.helper }}
                   path: helper-source
                   persist-credentials: false
             - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -45,15 +55,20 @@ jobs:
                   node_modules/.bin/tsc --noEmit -p packages/server/tsconfig.json
             - name: Build reviewed Messages helper
               working-directory: helper-source
+              env:
+                  BBH_EXPERIMENTAL_STICKERS: ${{ steps.profile.outputs.experimental }}
               run: |
                   ./scripts/test-compatibility.sh
                   ./scripts/build-messages.sh
+            - name: Test sticker preview conversion
+              if: inputs.native_stickers
+              run: bash packages/server/scripts/test-sticker-preview.sh
             - name: Build UI and server
               run: |
                   npm run build --workspace=@bluebubbles/ui
                   npm run build --workspace=@bluebubbles/server
             - name: Package and verify a separate preview app
-              run: node packages/server/scripts/build-preview.cjs "$GITHUB_WORKSPACE/helper-source"
+              run: node packages/server/scripts/build-preview.cjs "$GITHUB_WORKSPACE/helper-source" "$PREVIEW_BUILD_PROFILE"
             - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
               with:
                   name: bluebubbles-preview-macos-arm64

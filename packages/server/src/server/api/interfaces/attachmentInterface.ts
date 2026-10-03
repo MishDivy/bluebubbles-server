@@ -4,8 +4,21 @@ import { getBlurHash, isEmpty, isNotEmpty, resultAwaiter } from "@server/helpers
 import { FileSystem } from "@server/fileSystem";
 import { Attachment } from "@server/databases/imessage/entity/Attachment";
 import { Server } from "@server";
+import path from "path";
+import { StickerPreviewService } from "@server/api/stickerPreview";
 
 export class AttachmentInterface {
+    private static stickerPreviews: StickerPreviewService;
+
+    static async getStickerPreview(attachment: Attachment) {
+        AttachmentInterface.stickerPreviews ??= new StickerPreviewService(
+            path.join(FileSystem.baseDir, "StickerPreviews"), path.join(FileSystem.resources, "macos", "sticker-preview")
+        );
+        return AttachmentInterface.stickerPreviews.get({
+            isSticker: attachment.isSticker, filePath: FileSystem.getRealPath(attachment.filePath), stickerUserInfo: attachment.stickerUserInfo
+        });
+    }
+
     static livePhotoExts = ["png", "jpeg", "jpg", "heic", "tiff"];
 
     static async getBlurhash({

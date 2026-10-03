@@ -246,6 +246,12 @@ export class HttpRoutes {
                     },
                     {
                         method: HttpMethod.GET,
+                        path: ":guid/sticker-preview",
+                        validators: [AttachmentValidator.validateStickerPreview],
+                        controller: AttachmentRouter.stickerPreview
+                    },
+                    {
+                        method: HttpMethod.GET,
                         path: ":guid/download/force",
                         middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
                         validators: [AttachmentValidator.validateDownload],
