@@ -407,7 +407,8 @@ export function matchesSentStickerBatch(message: any, guid: string, chatGuid: st
                 message.attachments.some((attachment: any) => attachment.guid === expected)) &&
             (message.attributedBody == null || (getStickerLayout(message) &&
                 stickerBodyRuns(message).every((run, index) => run.attributes.__kIMFileTransferGUIDAttributeName === expectedGuids[index] &&
-                    (!filenames || run.attributes.__kIMFilenameAttributeName === filenames[index]))))))
+                    (!filenames || !Object.prototype.hasOwnProperty.call(run.attributes, "__kIMFilenameAttributeName") ||
+                        run.attributes.__kIMFilenameAttributeName === filenames[index]))))))
     );
 }
 

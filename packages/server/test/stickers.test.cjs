@@ -196,7 +196,8 @@ function rowFixture(count = 2) {
             stickerUserInfo: Buffer.from([1]) })).reverse(),
         attributedBody: [{ string: "\uFFFC".repeat(count), runs: Array.from({ length: count }, (_, index) => ({
             range: [index, 1], attributes: { __kIMFileTransferGUIDAttributeName: `attachment-${index}`,
-                __kIMMessagePartAttributeName: 0, __kIMEmojiImageAttributeName: 1, __kIMFilenameAttributeName: "fixture.png" }
+                __kIMMessagePartAttributeName: 0, __kIMEmojiImageAttributeName: 1,
+                __kIMBaseWritingDirectionAttributeName: -1, __kIMFilenameAttributeName: "fixture.png" }
         })) }] };
 }
 
@@ -221,6 +222,15 @@ test("row confirmation checks constructed transfer order even with duplicate fil
     assert.equal(stickers.matchesSentStickerBatch(row, "row", "chat", Date.now() - 1000, 2, names, ids), true);
     assert.equal(stickers.matchesSentStickerBatch(row, "row", "chat", Date.now() - 1000, 2, names, ids.slice().reverse()), false);
     assert.equal(stickers.matchesSentStickerBatch(row, "row", "chat", Date.now() - 1000, 2, names), false);
+    const native = rowFixture();
+    for (const run of native.attributedBody[0].runs) delete run.attributes.__kIMFilenameAttributeName;
+    assert.equal(Object.keys(native.attributedBody[0].runs[0].attributes).length, 4);
+    assert.equal(stickers.matchesSentStickerBatch(native, "row", "chat", Date.now() - 1000, 2, names, ids), true);
+    assert.equal(stickers.matchesSentStickerBatch(native, "row", "chat", Date.now() - 1000, 2, names, ids.slice().reverse()), false);
+    for (const filename of ["other.png", null, undefined, 42]) {
+        const bad = rowFixture(); bad.attributedBody[0].runs[0].attributes.__kIMFilenameAttributeName = filename;
+        assert.equal(stickers.matchesSentStickerBatch(bad, "row", "chat", Date.now() - 1000, 2, names, ids), false);
+    }
     for (const change of [{ isFromMe: false }, { associatedMessageGuid: "p:0/target" },
         { attachments: [row.attachments[0], row.attachments[0]] }, { attachments: row.attachments.slice(1) }]) {
         assert.equal(stickers.matchesSentStickerBatch({ ...row, ...change }, "row", "chat", Date.now() - 1000, 2, names, ids), false);
