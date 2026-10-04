@@ -18,6 +18,14 @@ import { isMinVentura } from "@server/env";
 import { StickerUnconfirmedError, parseStickerRowFields, parseStickerActionFields } from "@server/api/stickers";
 
 export class MessageRouter {
+    private static stickerFailure(error: unknown, confirmed: boolean, message: string): IMessageError {
+        const code = confirmed ? "response_serialization_failed"
+            : error instanceof StickerUnconfirmedError ? error.code : "outcome_unknown";
+        Server().log(`[NativeSticker] Failure code=${code}; automatic retry disabled.`, "warn");
+        return new IMessageError({ message,
+            error: `Check the chat before sending again. Automatic retry is disabled. [${code}]` });
+    }
+
     static async sendStickerPlacement(ctx: RouterContext, _: Next) {
         return MessageRouter.stickerAction(ctx, "placement");
     }
@@ -47,9 +55,8 @@ export class MessageRouter {
                 parseAttributedBody: true, parseMessageSummary: true, parsePayloadData: true } });
             return new Success(ctx, { message: "Sticker action confirmed!", data }).send();
         } catch (error) {
-            if (confirmed || error instanceof StickerUnconfirmedError) throw new IMessageError({
-                message: "Sticker action not confirmed", error: "Check the chat before sending again. Automatic retry is disabled."
-            });
+            if (confirmed || error instanceof StickerUnconfirmedError)
+                throw MessageRouter.stickerFailure(error, confirmed, "Sticker action not confirmed");
             throw new BadRequest({ error: "Native sticker action rejected. Verify capability, target ownership, iMessage chat and upload bounds." });
         }
     }
@@ -67,9 +74,8 @@ export class MessageRouter {
                 config: { loadChatParticipants: false, parseAttributedBody: true, parseMessageSummary: true, parsePayloadData: true } });
             return new Success(ctx, { message: "Sticker row sent!", data }).send();
         } catch (error) {
-            if (confirmed || error instanceof StickerUnconfirmedError) throw new IMessageError({
-                message: "Sticker row send not confirmed", error: "Check the chat before sending again. Automatic retry is disabled."
-            });
+            if (confirmed || error instanceof StickerUnconfirmedError)
+                throw MessageRouter.stickerFailure(error, confirmed, "Sticker row send not confirmed");
             throw new BadRequest({ error: "Native sticker row request rejected. Verify capability, iMessage chat and upload bounds." });
         }
     }
@@ -99,10 +105,7 @@ export class MessageRouter {
             return new Success(ctx, { message: "Sticker sent!", data }).send();
         } catch (error) {
             if (confirmed || error instanceof StickerUnconfirmedError) {
-                throw new IMessageError({
-                    message: "Sticker send not confirmed",
-                    error: "Check the chat before sending again. Automatic retry is disabled."
-                });
+                throw MessageRouter.stickerFailure(error, confirmed, "Sticker send not confirmed");
             }
             throw new BadRequest({
                 error: "Native sticker request rejected. Verify capability, iMessage chat and upload bounds."

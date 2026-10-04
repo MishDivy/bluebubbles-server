@@ -31,7 +31,58 @@ const MAX_DECODED_PIXELS = 25000000;
 const allowedFields = new Set(["chatGuid", "tempGuid", "name", "stickerLabel"]);
 const attempts = new Set<string>();
 
-export class StickerUnconfirmedError extends Error {}
+// Exact fixed responses from the pinned helper. Never stringify an unknown rejection.
+const stickerHelperErrors = {
+    "Invalid standalone sticker request": "helper_request_invalid",
+    "Invalid sticker row request": "helper_request_invalid",
+    "Invalid sticker placement request": "helper_request_invalid",
+    "Invalid sticker reaction request": "helper_request_invalid",
+    "Experimental sticker sending is disabled": "helper_disabled",
+    "Experimental sticker placement is disabled": "helper_disabled",
+    "Experimental sticker reactions are disabled": "helper_disabled",
+    "Native sticker sending is unavailable": "helper_unavailable",
+    "Native sticker placement is unavailable": "helper_unavailable",
+    "Native sticker reactions are unavailable": "helper_unavailable",
+    "Native sticker chat is unavailable": "helper_chat_unavailable",
+    "Stickers require a native iMessage chat": "helper_chat_not_imessage",
+    "Invalid or inaccessible sticker image": "helper_image_invalid",
+    "Unable to snapshot sticker image": "helper_snapshot_failed",
+    "Unable to prepare native sticker transfer": "helper_transfer_failed",
+    "Unable to construct native sticker message": "helper_message_failed",
+    "Unable to construct native sticker placement": "helper_placement_failed",
+    "Unable to construct native sticker reaction": "helper_reaction_failed",
+    "Native sticker preparation failed": "helper_preparation_failed",
+    "Native sticker placement preparation failed": "helper_preparation_failed",
+    "Native sticker reaction preparation failed": "helper_preparation_failed",
+    "Sticker dispatch outcome is unknown; do not retry": "helper_dispatch_unknown",
+    "Sticker placement dispatch outcome is unknown; do not retry": "helper_dispatch_unknown",
+    "Sticker reaction dispatch outcome is unknown; do not retry": "helper_dispatch_unknown",
+    "Native sticker target lookup timed out": "helper_target_timeout",
+    "Native sticker target is unavailable": "helper_target_unavailable",
+    "Native sticker placement target is unavailable": "helper_target_unavailable",
+    "Native sticker reaction target is unavailable": "helper_target_unavailable",
+    "Native sticker target part is unavailable": "helper_target_part_unavailable",
+    "Native sticker target lookup failed": "helper_target_failed",
+    "Native sticker placement target changed": "helper_target_changed",
+    "Native sticker reaction target changed": "helper_target_changed",
+    "Current own sticker reaction is unavailable or changed": "helper_reaction_changed",
+    "Transaction timeout": "helper_timeout"
+} as const;
+
+type StickerFailureCode = typeof stickerHelperErrors[keyof typeof stickerHelperErrors] |
+    "helper_unknown" | "helper_response_invalid" | "helper_row_response_invalid" |
+    "confirmation_read_failed" | "confirmation_missing" | "confirmation_mismatch" | "outcome_unknown";
+
+export function stickerHelperFailureCode(error: unknown): StickerFailureCode {
+    return typeof error === "string" && Object.prototype.hasOwnProperty.call(stickerHelperErrors, error)
+        ? stickerHelperErrors[error as keyof typeof stickerHelperErrors] : "helper_unknown";
+}
+
+export class StickerUnconfirmedError extends Error {
+    constructor(message: string, readonly code: StickerFailureCode = "outcome_unknown") {
+        super(message);
+    }
+}
 
 export function hasStickerAttempt(tempGuid: string): boolean {
     return attempts.has(tempGuid);

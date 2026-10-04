@@ -62,6 +62,83 @@ function png(width = 64, height = 64, frames = 1) {
     return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), ...chunks]);
 }
 const stickers = load("api/stickers.ts");
+test("helper failure codes accept only exact fixed string rejections", () => {
+    for (const [reason, code] of [
+        ["Invalid or inaccessible sticker image", "helper_image_invalid"],
+        ["Unable to construct native sticker message", "helper_message_failed"],
+        ["Unable to construct native sticker placement", "helper_placement_failed"],
+        ["Unable to construct native sticker reaction", "helper_reaction_failed"],
+        ["Current own sticker reaction is unavailable or changed", "helper_reaction_changed"],
+        ["Native sticker target lookup timed out", "helper_target_timeout"],
+        ["Sticker dispatch outcome is unknown; do not retry", "helper_dispatch_unknown"],
+        ["Transaction timeout", "helper_timeout"]
+    ]) assert.equal(stickers.stickerHelperFailureCode(reason), code);
+    for (const error of [null, undefined, 123, "constructor", "toString", "__proto__",
+        "Unable to construct native sticker message private suffix", "Invalid or inaccessible sticker image\n",
+        new Error("Unable to construct native sticker message"), { message: "Transaction timeout" },
+        { toString() { throw new Error("Must not stringify private payloads"); } }]) {
+        assert.equal(stickers.stickerHelperFailureCode(error), "helper_unknown");
+    }
+});
+
+test("all native sticker routes expose and log fixed codes without private error contents", async () => {
+    const state = load("api/stickers.ts");
+    const logs = [];
+    let mode;
+    const privateDetails = "synthetic-private-path-guid-body";
+    class IMessageError extends Error {
+        constructor(response) { super(response.error); this.status = 500; this.response = response; }
+    }
+    class BadRequest extends Error {
+        constructor(response) { super(response.error); this.status = 400; }
+    }
+    const send = async () => {
+        if (mode === "unknown") throw new state.StickerUnconfirmedError(privateDetails, state.stickerHelperFailureCode(new Error(privateDetails)));
+        if (mode === "known") throw new state.StickerUnconfirmedError(privateDetails,
+            state.stickerHelperFailureCode("Unable to construct native sticker message"));
+        if (mode === "validation") throw new Error(privateDetails);
+        return {};
+    };
+    const { MessageRouter } = load("api/http/api/v1/routers/messageRouter.ts", {
+        "@server": { Server: () => ({ log: (message, level) => logs.push({ message, level }) }) },
+        "@server/api/stickers": state,
+        "@server/api/interfaces/messageInterface": { MessageInterface: {
+            sendSticker: send, sendStickerRow: send, sendStickerAction: send, removeStickerTapback: send
+        } },
+        "@server/api/serializers/MessageSerializer": { MessageSerializer: { async serialize() { throw new Error(privateDetails); } } },
+        "@server/fileSystem": {}, "@server/helpers/utils": {}, "@server/databases/imessage/entity/Message": {},
+        "@server/managers/outgoingMessageManager/messagePromise": {}, "@server/utils/CollectionUtils": {},
+        "../responses/success": {}, "../responses/errors": { IMessageError, BadRequest }, "../utils": {}, "@server/env": {}
+    });
+    for (const route of ["sendSticker", "sendStickerRow", "sendStickerPlacement", "sendStickerTapback", "removeStickerTapback"]) {
+        const body = { chatGuid: "chat", tempGuid: "temporary", name: "fixture.png" };
+        if (route === "sendStickerRow") {
+            delete body.name; body.stickers = JSON.stringify([{ name: "fixture.png" }, { name: "fixture.png" }]);
+        }
+        if (["sendStickerPlacement", "sendStickerTapback", "removeStickerTapback"].includes(route)) {
+            body.selectedMessageGuid = "target"; body.partIndex = 0;
+        }
+        if (route === "sendStickerPlacement") body.placement = JSON.stringify({ x: 0, y: 0, scale: 1, rotation: 0, parentWidth: 400 });
+        if (route === "removeStickerTapback") { delete body.name; body.reactionGuid = "reaction"; }
+        const ctx = { request: { body, files: { attachment: { path: "unused" }, attachment0: { path: "unused" }, attachment1: { path: "unused" } } } };
+        for (mode of ["known", "unknown", "serialization", "validation"]) {
+            const before = logs.length;
+            const code = { known: "helper_message_failed", unknown: "helper_unknown", serialization: "response_serialization_failed" }[mode];
+            await assert.rejects(MessageRouter[route](ctx), error => {
+                assert.equal(error.status, mode === "validation" ? 400 : 500);
+                assert.equal(error.message.includes(privateDetails), false);
+                if (mode !== "validation") assert.equal(error.message,
+                    `Check the chat before sending again. Automatic retry is disabled. [${code}]`);
+                return true;
+            });
+            assert.equal(logs.length - before, mode === "validation" ? 0 : 1);
+            if (mode !== "validation") assert.deepEqual(logs.at(-1), {
+                message: `[NativeSticker] Failure code=${code}; automatic retry disabled.`, level: "warn"
+            });
+        }
+    }
+});
+
 function parseMultipart(files, limits = stickers.stickerMultipartLimits) {
     const { Readable } = require("node:stream");
     const { IncomingForm } = require("formidable");
@@ -848,6 +925,9 @@ test("real send flow fails closed before dispatch, blocks concurrent duplicates 
                 async sendSticker() {
                     sends++;
                     if (helperMode === "rejected") throw new Error("synthetic private helper payload");
+                    if (helperMode === "image-invalid") throw "Invalid or inaccessible sticker image";
+                    if (helperMode === "message-failed") throw "Unable to construct native sticker message";
+                    if (helperMode === "timeout") throw "Transaction timeout";
                     if (helperMode === "missing-guid") return {};
                     return pending;
                 }
@@ -861,6 +941,9 @@ test("real send flow fails closed before dispatch, blocks concurrent duplicates 
                 assert.equal(guid, "sent");
                 assert.equal(withChats, true);
                 assert.equal(withAttachments, true);
+                if (helperMode === "db-error") throw new Error("private database details");
+                if (helperMode === "missing-row") return null;
+                if (helperMode === "wrong-row") return { ...row, isFromMe: false };
                 return row;
             }
         },
@@ -954,18 +1037,24 @@ test("real send flow fails closed before dispatch, blocks concurrent duplicates 
         assert.equal(success, row);
         assert.equal(sends, 2);
         await assert.rejects(MessageInterface.sendSticker({ ...data, tempGuid: "confirmed" }), /already queued/);
-        for (helperMode of ["rejected", "missing-guid"]) {
+        const failures = {
+            rejected: "helper_unknown", "image-invalid": "helper_image_invalid", "message-failed": "helper_message_failed",
+            timeout: "helper_timeout", "missing-guid": "helper_response_invalid", "db-error": "confirmation_read_failed",
+            "missing-row": "confirmation_missing", "wrong-row": "confirmation_mismatch"
+        };
+        for (helperMode of Object.keys(failures)) {
             const attempt = { ...data, tempGuid: helperMode };
             await assert.rejects(MessageInterface.sendSticker(attempt), error => {
                 assert.equal(error instanceof state.StickerUnconfirmedError, true);
                 assert.equal(error.message.includes("private helper payload"), false);
+                assert.equal(error.code, failures[helperMode]);
                 return true;
             });
             assert.equal(state.hasStickerAttempt(attempt.tempGuid), true);
             cached.clear();
             await assert.rejects(MessageInterface.sendSticker(attempt), /already queued/);
         }
-        assert.equal(sends, 4);
+        assert.equal(sends, 2 + Object.keys(failures).length);
     } finally {
         state.removeStickerUpload(parsed.files.attachment.path);
         for (const { destination, directory } of created) {
@@ -986,10 +1075,12 @@ test("row send stages every asset before one dispatch and retains uncertain atte
     let ordinary = 0;
     let responseIds = ["attachment-0", "attachment-1"];
     let resultRow = rowFixture();
+    let rejection;
     const server = { privateApi: { capabilities: { stickerRows: false, stickerSending: true }, attachment: {
         async sendSticker() { ordinary++; throw new Error("No individual fallback"); },
         async sendStickerRow({ chatGuid, stickers: prepared }) {
             sends++; assert.equal(chatGuid, "chat"); assert.equal(prepared.length, 2);
+            if (rejection) throw rejection;
             assert.equal(prepared[0].filename, "fixture.png"); assert.equal(prepared[1].filename, "fixture.png");
             assert.deepEqual(fs.readFileSync(prepared[0].filePath), png(64, 64));
             assert.deepEqual(fs.readFileSync(prepared[1].filePath), png(32, 32));
@@ -1020,17 +1111,28 @@ test("row send stages every asset before one dispatch and retains uncertain atte
         assert.equal(fs.existsSync(created[1].filename), false);
         await assert.rejects(MessageInterface.sendStickerRow(request), /already queued/);
         responseIds = ["attachment-1", "attachment-0"];
-        await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "order-mismatch" }), /not confirmed/);
+        await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "order-mismatch" }), error => {
+            assert.equal(error.code, "confirmation_mismatch"); return true;
+        });
         cached.clear();
         await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "order-mismatch" }), /already queued/);
         responseIds = [];
-        await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "missing-ids" }), /unknown/);
+        await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "missing-ids" }), error => {
+            assert.equal(error.code, "helper_row_response_invalid"); return true;
+        });
         assert.equal(ordinary, 0); assert.equal(sends, 3);
+        rejection = "Unable to prepare native sticker transfer";
+        await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "row-rejected" }), error => {
+            assert.equal(error.code, "helper_transfer_failed"); return true;
+        });
+        cached.clear();
+        await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "row-rejected" }), /already queued/);
+        assert.equal(ordinary, 0); assert.equal(sends, 4);
         const bad = await parseMultipart([["attachment1", png(619, 64)]]);
         try {
             const before = created.length;
             await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "bad-image", stickers: [request.stickers[0], { name: "fixture.png", attachmentPath: bad.files.attachment1.path }] }), /limits/);
-            assert.equal(created.length, before); assert.equal(sends, 3); assert.equal(state.hasStickerAttempt("bad-image"), false);
+            assert.equal(created.length, before); assert.equal(sends, 4); assert.equal(state.hasStickerAttempt("bad-image"), false);
         } finally { for (const file of bad.openedFiles) state.removeStickerUpload(file.path); }
     } finally {
         for (const file of parsed.openedFiles) state.removeStickerUpload(file.path);
@@ -1061,6 +1163,7 @@ test("native associated sends reuse staging, ownership checks and non-retryable 
             resultRow = makeRow(action === "placement" ? "sticker" : "sticker-reaction");
             if (mode === "wrong-row") resultRow.associatedMessageGuid = "p:1/target";
             if (mode === "error") throw new Error("private synthetic native error");
+            if (mode === "known-error") throw "Unable to construct native sticker reaction";
             if (mode === "pending") return new Promise(resolve => { release = resolve; });
             return mode === "missing-guid" ? {} : { identifier: "sent" };
         },
@@ -1068,6 +1171,7 @@ test("native associated sends reuse staging, ownership checks and non-retryable 
             calls.push({ action: "remove", data });
             assert.deepEqual(data, { chatGuid: "chat", selectedMessageGuid: "target", partIndex: 0, reactionGuid: "reaction" });
             if (mode === "replacement-race") throw new Error("private newer reaction details");
+            if (mode === "known-error") throw "Current own sticker reaction is unavailable or changed";
             resultRow = { ...makeRow("-sticker-reaction"), attachments: [] };
             if (mode === "wrong-row") resultRow.isFromMe = false;
             return mode === "missing-guid" ? {} : { identifier: "sent" };
@@ -1116,10 +1220,12 @@ test("native associated sends reuse staging, ownership checks and non-retryable 
         const before = calls.length;
         await assert.rejects(MessageInterface.sendStickerAction("tapback", { ...base, tempGuid: "concurrent" }), /already queued/);
         assert.equal(calls.length, before); release({ identifier: "sent" }); await pending;
-        for (mode of ["wrong-row", "error", "missing-guid"]) {
+        for (mode of ["wrong-row", "error", "missing-guid", "known-error"]) {
             const tempGuid = `uncertain-${mode}`;
             await assert.rejects(MessageInterface.sendStickerAction("tapback", { ...base, tempGuid }), error => {
-                assert.equal(error instanceof state.StickerUnconfirmedError, true); assert.equal(error.message.includes("private"), false); return true;
+                assert.equal(error instanceof state.StickerUnconfirmedError, true); assert.equal(error.message.includes("private"), false);
+                assert.equal(error.code, { "wrong-row": "confirmation_mismatch", error: "helper_unknown",
+                    "missing-guid": "helper_response_invalid", "known-error": "helper_reaction_failed" }[mode]); return true;
             });
             assert.equal(fs.existsSync(created.at(-1).filename), true);
             cached.clear(); assert.equal(state.hasStickerAttempt(tempGuid), true);
@@ -1137,10 +1243,12 @@ test("native associated sends reuse staging, ownership checks and non-retryable 
         assert.equal((await MessageInterface.removeStickerTapback(removal)).associatedMessageType, "-sticker-reaction");
         assert.equal(created.length, beforeRemoval);
         await assert.rejects(MessageInterface.removeStickerTapback(removal), /already queued/);
-        for (mode of ["replacement-race", "wrong-row", "missing-guid"]) {
+        for (mode of ["replacement-race", "wrong-row", "missing-guid", "known-error"]) {
             const tempGuid = `remove-${mode}`;
             await assert.rejects(MessageInterface.removeStickerTapback({ ...removal, tempGuid }), error => {
-                assert.equal(error instanceof state.StickerUnconfirmedError, true); assert.equal(error.message.includes("private"), false); return true;
+                assert.equal(error instanceof state.StickerUnconfirmedError, true); assert.equal(error.message.includes("private"), false);
+                assert.equal(error.code, { "replacement-race": "helper_unknown", "wrong-row": "confirmation_mismatch",
+                    "missing-guid": "helper_response_invalid", "known-error": "helper_reaction_changed" }[mode]); return true;
             });
             cached.clear(); assert.equal(state.hasStickerAttempt(tempGuid), true);
             await assert.rejects(MessageInterface.removeStickerTapback({ ...removal, tempGuid }), /already queued/);

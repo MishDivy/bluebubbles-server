@@ -42,7 +42,8 @@ import {
     matchesSentStickerAction,
     StickerTarget,
     StickerPlacement,
-    StickerUnconfirmedError
+    StickerUnconfirmedError,
+    stickerHelperFailureCode
 } from "@server/api/stickers";
 
 export class MessageInterface {
@@ -100,23 +101,33 @@ export class MessageInterface {
         reserveStickerAttempt(request.tempGuid);
         Server().httpService.sendCache.add(request.tempGuid);
         const sentAt = Date.now() - 10000;
+        let result: TransactionResult;
         try {
-            const result = await Server().privateApi.attachment.removeStickerTapback({
+            result = await Server().privateApi.attachment.removeStickerTapback({
                 chatGuid: request.chatGuid, selectedMessageGuid: target.selectedMessageGuid,
                 partIndex: target.partIndex, reactionGuid: target.reactionGuid
             });
-            if (typeof result?.identifier !== "string" || !result.identifier) throw new Error("No constructed message GUID.");
-            const matches = (message: Message) => matchesSentStickerAction(message, result.identifier, request.chatGuid,
-                sentAt, "remove", target, [reaction.attachments[0].guid]);
-            const message = await resultAwaiter({ maxWaitMs: 60000, getData: async () => {
+        } catch (error) {
+            throw new StickerUnconfirmedError("Sticker removal outcome is unknown. Check the chat before sending again.", stickerHelperFailureCode(error));
+        }
+        if (typeof result?.identifier !== "string" || !result.identifier)
+            throw new StickerUnconfirmedError("Sticker removal outcome is unknown. Check the chat before sending again.", "helper_response_invalid");
+        const matches = (message: Message) => matchesSentStickerAction(message, result.identifier, request.chatGuid,
+            sentAt, "remove", target, [reaction.attachments[0].guid]);
+        let message: Message;
+        let sawRow = false;
+        try {
+            message = await resultAwaiter({ maxWaitMs: 60000, getData: async () => {
                 const row = await Server().iMessageRepo.getMessage(result.identifier, true, true);
+                sawRow ||= row != null;
                 return matches(row) ? row : null;
             } });
-            if (!matches(message)) throw new Error("Removal was not confirmed.");
-            return message;
         } catch {
-            throw new StickerUnconfirmedError("Sticker removal outcome is unknown. Check the chat before sending again.");
+            throw new StickerUnconfirmedError("Sticker removal outcome is unknown. Check the chat before sending again.", "confirmation_read_failed");
         }
+        if (!matches(message)) throw new StickerUnconfirmedError("Sticker removal was not confirmed. Check the chat before sending again.",
+            sawRow ? "confirmation_mismatch" : "confirmation_missing");
+        return message;
     }
 
     private static async sendStickerBatch(chatGuid: string, tempGuid: string,
@@ -186,34 +197,37 @@ export class MessageInterface {
                 }) : rowSend
                 ? await Server().privateApi.attachment.sendStickerRow({ chatGuid, stickers: prepared })
                 : await Server().privateApi.attachment.sendSticker({ chatGuid, ...prepared[0] });
-        } catch {
-            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+        } catch (error) {
+            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.", stickerHelperFailureCode(error));
         }
         if (typeof result?.identifier !== "string" || !result.identifier) {
-            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.", "helper_response_invalid");
         }
         const expectedGuids = rowSend ? result.data?.attachmentGuids : undefined;
         if (rowSend && (!Array.isArray(expectedGuids) || expectedGuids.length !== stickers.length ||
             new Set(expectedGuids).size !== stickers.length || expectedGuids.some(guid => typeof guid !== "string" || !guid))) {
-            throw new StickerUnconfirmedError("Sticker row send outcome is unknown. Check the chat before sending again.");
+            throw new StickerUnconfirmedError("Sticker row send outcome is unknown. Check the chat before sending again.", "helper_row_response_invalid");
         }
         let message: Message;
         const matches = (row: Message) => target
             ? matchesSentStickerAction(row, result.identifier, chatGuid, sentAt, target.action, target)
             : matchesSentStickerBatch(row, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids);
+        let sawRow = false;
         try {
             message = await resultAwaiter({
                 maxWaitMs: 60000,
                 getData: async () => {
                     const row = await Server().iMessageRepo.getMessage(result.identifier, true, true);
+                    sawRow ||= row != null;
                     return matches(row) ? row : null;
                 }
             });
         } catch {
-            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.");
+            throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.", "confirmation_read_failed");
         }
         if (!matches(message)) {
-            throw new StickerUnconfirmedError("Sticker send was not confirmed. Check the chat before sending again.");
+            throw new StickerUnconfirmedError("Sticker send was not confirmed. Check the chat before sending again.",
+                sawRow ? "confirmation_mismatch" : "confirmation_missing");
         }
         if (rowSend) message.verifiedStickerLayout = { attachmentGuids: [...expectedGuids], partIndex: 0 };
         cleanupPrepared(message);
