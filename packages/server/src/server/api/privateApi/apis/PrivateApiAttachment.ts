@@ -5,7 +5,7 @@ import {
     TransactionType
 } from "@server/managers/transactionManager/transactionPromise";
 import { PrivateApiAction } from ".";
-import type { StickerPlacement, StickerTarget } from "@server/api/stickers";
+import { validateStickerCompositionText, StickerPlacement, StickerTarget } from "@server/api/stickers";
 
 export class PrivateApiAttachment extends PrivateApiAction {
     tag = "PrivateApiAttachment";
@@ -35,11 +35,14 @@ export class PrivateApiAttachment extends PrivateApiAction {
         }, new TransactionPromise(TransactionType.ATTACHMENT));
     }
 
-    async sendStickerRow({ chatGuid, stickers }: { chatGuid: string; stickers: { filePath: string; filename?: string; stickerLabel?: string }[] }): Promise<TransactionResult> {
-        if (!this.api.capabilities.stickerRows) throw new Error("Native sticker rows are not supported by the connected Messages helper.");
-        if (!Array.isArray(stickers) || stickers.length < 2 || stickers.length > 10) throw new Error("A sticker row must contain 2 to 10 stickers.");
+    async sendStickerRow({ chatGuid, stickers, text }: { chatGuid: string; stickers: { filePath: string; filename?: string; stickerLabel?: string }[]; text?: string }): Promise<TransactionResult> {
+        const composition = text !== undefined;
+        if (!(composition ? this.api.capabilities.stickerComposition : this.api.capabilities.stickerRows))
+            throw new Error("Native sticker rows or composition are not supported by the connected Messages helper.");
+        if (!Array.isArray(stickers) || stickers.length < (composition ? 1 : 2) || stickers.length > 10) throw new Error("Invalid sticker row count.");
+        if (composition) validateStickerCompositionText(text, stickers.length);
         this.throwForNoMissingFields("send-sticker-row", [chatGuid, ...stickers.map(sticker => sticker.filePath)]);
-        return this.sendApiMessage("send-sticker-row", { chatGuid, stickers: stickers.map(({ filePath, filename, stickerLabel }) => ({
+        return this.sendApiMessage("send-sticker-row", { chatGuid, ...(composition ? { text } : {}), stickers: stickers.map(({ filePath, filename, stickerLabel }) => ({
             filePath, ...(filename != null ? { filename } : {}), ...(stickerLabel != null ? { stickerLabel } : {})
         })) }, new TransactionPromise(TransactionType.ATTACHMENT));
     }

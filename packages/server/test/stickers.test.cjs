@@ -214,6 +214,86 @@ test("row JSON enforces 2 to 10 ordered descriptors and rejects unsupported fiel
     assert.equal(stickers.isStickerRowUploadRequest("POST", "/API/V1/MESSAGE/SEND-STICKER-ROW/"), true);
 });
 
+test("composition fields preserve exact Unicode text and enforce reserved markers and combined bounds", () => {
+    const descriptors = [{ name: "fixture.png" }];
+    const body = { chatGuid: "chat", tempGuid: "composition", stickers: JSON.stringify(descriptors), text: " \n🙂\uFFFC\tend " };
+    assert.deepEqual(stickers.parseStickerRowFields(body), descriptors);
+    assert.equal(body.text, " \n🙂\uFFFC\tend ");
+    for (const text of [undefined, null, 1, "", "text", "\uFFFC\uFFFC", "\ud800\uFFFC", "\udc00\uFFFC",
+        "\ud800x\uFFFC", "\uFFFC\ud800", "x".repeat(4096) + "\uFFFC"]) {
+        assert.throws(() => stickers.parseStickerRowFields({ ...body, text }));
+    }
+    assert.doesNotThrow(() => stickers.parseStickerRowFields({ ...body, text: "x".repeat(4095) + "\uFFFC" }));
+    assert.throws(() => stickers.parseStickerRowFields({ ...body, text: "界".repeat(3000) + "\uFFFC" }));
+    const prefix = { ...body, text: "\uFFFC", stickers: "" };
+    const json = JSON.stringify(descriptors);
+    const remaining = stickers.MAX_STICKER_FIELDS_BYTES - Buffer.byteLength(prefix.chatGuid + prefix.tempGuid + prefix.text + json);
+    assert.doesNotThrow(() => stickers.parseStickerRowFields({ ...prefix, stickers: json + " ".repeat(remaining) }));
+    assert.throws(() => stickers.parseStickerRowFields({ ...prefix, stickers: json + " ".repeat(remaining + 1) }));
+    for (const field of ["selectedMessageGuid", "partIndex", "placement", "reaction", "isAudioMessage", "segments"])
+        assert.throws(() => stickers.parseStickerRowFields({ ...body, [field]: "unsupported" }));
+    assert.throws(() => stickers.parseStickerRowFields({ ...body, stickers: JSON.stringify(Array(11).fill(descriptors[0])), text: "\uFFFC".repeat(11) }));
+    assert.throws(() => stickers.parseStickerRowFields({ ...body, stickers: "[]", text: "plain text" }));
+});
+
+function compositionFixture(count = 2) {
+    const row = rowFixture(count);
+    let text = " \n🙂";
+    const textAttributes = { __kIMMessagePartAttributeName: 0, __kIMBaseWritingDirectionAttributeName: -1 };
+    const runs = [{ range: [0, text.length], attributes: { ...textAttributes } }];
+    for (let index = 0; index < count; index++) {
+        const sticker = row.attributedBody[0].runs[index];
+        sticker.range = [text.length, 1];
+        delete sticker.attributes.__kIMFilenameAttributeName;
+        runs.push(sticker);
+        text += "\uFFFC";
+        runs.push({ range: [text.length, 2], attributes: { ...textAttributes } });
+        text += "\t ";
+    }
+    row.attributedBody = [{ string: text, runs }];
+    return row;
+}
+
+test("mixed confirmation requires exact complete body and unique linked transfers at each UTF16 marker", () => {
+    const check = row => stickers.matchesSentStickerComposition(row, "row", "chat", Date.now() - 1000,
+        compositionFixture().attributedBody[0].string, ["attachment-0", "attachment-1"], ["fixture.png", "fixture.png"]);
+    assert.equal(check(compositionFixture()), true);
+    assert.equal(stickers.getStickerLayout(compositionFixture()), null);
+    for (const change of [{ attributedBody: null }, { attributedBody: [] }, { isFromMe: false }, { error: 1 },
+        { isSent: false }, { service: "SMS" }, { associatedMessageGuid: "p:0/target" },
+        { chats: [{ guid: "other", serviceName: "iMessage" }] }, { guid: "other" },
+        { dateCreated: new Date(0) }, { attachments: rowFixture().attachments.slice(1) }]) {
+        assert.equal(check({ ...compositionFixture(), ...change }), false);
+    }
+    for (const mutate of [
+        row => row.attributedBody[0].string += "extra",
+        row => row.attributedBody[0].string = row.attributedBody[0].string.trim(),
+        row => row.attributedBody.push(row.attributedBody[0]),
+        row => row.attributedBody[0].runs[1].range = [0, 1],
+        row => row.attributedBody[0].runs[1].range[1] = 2,
+        row => row.attributedBody[0].runs.pop(),
+        row => row.attributedBody[0].runs.push({ range: [0, 1], attributes: {} }),
+        row => delete row.attributedBody[0].runs[1].attributes.__kIMFileTransferGUIDAttributeName,
+        row => row.attributedBody[0].runs[1].attributes.__kIMFileTransferGUIDAttributeName = "attachment-1",
+        row => row.attributedBody[0].runs[0].attributes.__kIMFileTransferGUIDAttributeName = "attachment-0",
+        row => row.attributedBody[0].runs[1].attributes.__kIMMessagePartAttributeName = -1,
+        row => row.attributedBody[0].runs[1].attributes.__kIMMessagePartAttributeName = "0",
+        row => row.attributedBody[0].runs[1].attributes.__kIMEmojiImageAttributeName = 0,
+        row => row.attributedBody[0].runs[1].attributes.__kIMFilenameAttributeName = "other.png",
+        row => row.attachments[0].stickerUserInfo = Buffer.alloc(0),
+        row => row.attachments[0].guid = row.attachments[1].guid
+    ]) { const row = compositionFixture(); mutate(row); assert.equal(check(row), false); }
+    const single = compositionFixture(1);
+    assert.equal(stickers.matchesSentStickerComposition(single, "row", "chat", 0,
+        single.attributedBody[0].string, ["attachment-0"], ["fixture.png"]), true);
+    assert.equal(stickers.matchesSentStickerComposition(compositionFixture(), "row", "chat", 0,
+        compositionFixture().attributedBody[0].string, ["attachment-1", "attachment-0"], ["fixture.png", "fixture.png"]), false);
+    for (const part of [undefined, null, "0", false, -1, 0.5, Infinity, 2147483648]) {
+        const row = compositionFixture(); row.attributedBody[0].runs[0].attributes.__kIMMessagePartAttributeName = part;
+        assert.equal(check(row), false);
+    }
+});
+
 test("row confirmation checks constructed transfer order even with duplicate filenames and reversed DB attachment order", () => {
     const row = rowFixture();
     const ids = ["attachment-0", "attachment-1"];
@@ -268,6 +348,38 @@ test("row upload validator rejects oversized individual files, extras and repeat
     assert.match(oversized.error.message, /maxFileSize/);
     await new Promise(resolve => setTimeout(resolve, 20));
     for (const file of oversized.openedFiles) assert.equal(fs.existsSync(file.path), false);
+});
+
+test("composition upload validator permits one indexed file and rejects extras or repeated files", async () => {
+    const Validator = validator({ httpService: { sendCache: { find: () => null } } });
+    const body = { chatGuid: "chat", tempGuid: "composition-upload", stickers: JSON.stringify([{ name: "fixture.png" }]), text: "a\uFFFCb" };
+    const parsed = await parseMultipart([["attachment0", png()]], stickers.stickerRowMultipartLimits);
+    try {
+        await Validator.validateStickerRow({ request: { body, files: parsed.files } }, async () => {});
+        for (const files of [{ ...parsed.files, extra: parsed.files.attachment0 },
+            { attachment0: [parsed.files.attachment0, parsed.files.attachment0] }, { attachment: parsed.files.attachment0 }]) {
+            await assert.rejects(Validator.validateStickerRow({ request: { body, files } }, async () => {}));
+        }
+    } finally { for (const file of parsed.openedFiles) stickers.removeStickerUpload(file.path); }
+});
+
+test("row HTTP route forwards composition text verbatim and returns only the confirmed message", async () => {
+    const text = " \n🙂\uFFFC\t ";
+    let request;
+    const row = compositionFixture(1);
+    const { MessageRouter } = load("api/http/api/v1/routers/messageRouter.ts", {
+        "@server": {}, "@server/api/interfaces/messageInterface": { MessageInterface: { async sendStickerRow(value) { request = value; return row; } } },
+        "@server/api/serializers/MessageSerializer": { MessageSerializer: { async serialize({ message }) { assert.equal(message, row); return message; } } },
+        "@server/fileSystem": {}, "@server/helpers/utils": {}, "@server/databases/imessage/entity/Message": {},
+        "@server/managers/outgoingMessageManager/messagePromise": {}, "@server/utils/CollectionUtils": {},
+        "../responses/success": { Success: class { constructor(ctx, response) { this.response = response; } send() { return this.response; } } },
+        "../responses/errors": {}, "../utils": {}, "@server/env": {}
+    });
+    const response = await MessageRouter.sendStickerRow({ request: { body: { chatGuid: "chat", tempGuid: "composition-route", text,
+        stickers: JSON.stringify([{ name: "fixture.png" }]) }, files: { attachment0: { path: "synthetic-upload" } } } });
+    assert.equal(request.text, text);
+    assert.deepEqual(request.stickers, [{ name: "fixture.png", attachmentPath: "synthetic-upload" }]);
+    assert.equal(response.data, row);
 });
 
 const syntheticSource = Buffer.from("YnBsaXN0MDDdAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRpTcGlkU3NhaVVzaGFzaFNzaWRTc2lyU3NsaVNzcHZTc3B3U3Nyb1Nzc2FTc3hzU3N5c1d1bmtub3duXxAQc3ludGhldGljLmJ1bmRsZVExXnN5bnRoZXRpYy5oYXNoXxAPc3ludGhldGljLmFzc2V0CVEyEAFSNzJUMC4yNVMxLjVSLTRROFdvbWl0LW1lCCMnKzE1OT1BRUlNUVVdcHKBk5SWmJugpKepAAAAAAAAAQEAAAAAAAAAGwAAAAAAAAAAAAAAAAAAALE=", "base64");
@@ -399,6 +511,21 @@ test("sticker metadata and verified row layout survive reduced notifications and
         assert.deepEqual(output.attachments[0].metadata.sticker.row, { index: 1, partIndex: 0, count: 2 });
         assert.equal(JSON.stringify(output).includes("omit-me"), false);
     }
+    const mixed = compositionFixture();
+    mixed.universalText = () => mixed.attributedBody[0].string;
+    for (const attachment of mixed.attachments) attachment.getMimeType = () => "image/png";
+    const expected = { attachmentGuids: ["attachment-0", "attachment-1"],
+        parts: [1, 3].map(index => ({ range: mixed.attributedBody[0].runs[index].range, partIndex: 0 })) };
+    mixed.verifiedStickerComposition = expected;
+    const output = await MessageSerializer.serialize({ message: mixed, config: { parseAttributedBody: true } });
+    assert.deepEqual(output.stickerComposition, expected);
+    assert.equal(output.attributedBody[0].string, mixed.attributedBody[0].string);
+    assert.equal(output.stickerLayout, undefined);
+    assert.equal(output.attachments.some(attachment => attachment.metadata?.sticker?.row), false);
+    delete mixed.verifiedStickerComposition;
+    const history = await MessageSerializer.serialize({ message: mixed, config: { parseAttributedBody: true } });
+    assert.equal(history.stickerComposition, undefined);
+    assert.equal(history.stickerLayout, undefined);
 });
 
 test("sticker serialization and download preserve original bytes despite conversion or resize options", async () => {
@@ -748,7 +875,7 @@ test("only connected Messages helper explicit true advertises and receives nativ
     assert.equal(service.capabilities.stickerSending, false);
     service.registerClient("com.apple.MobileSMS", messages, { stickerSending: true });
     assert.equal(service.capabilities.stickerSending, true);
-    for (const name of ["stickerPlacement", "stickerRows", "stickerReactions"])
+    for (const name of ["stickerPlacement", "stickerRows", "stickerComposition", "stickerReactions"])
         assert.equal(service.capabilities[name], false);
     await service.writeData("send-sticker", { chatGuid: "chat", filePath: "/fixture" });
     assert.equal(writes.length, 1);
@@ -779,6 +906,30 @@ test("rows require explicit connected Messages capability and preserve construct
     assert.deepEqual(service.readTransactionData({ transactionId: "transaction", identifier: "row", attachmentGuids: ["first", "second"] }), { attachmentGuids: ["first", "second"] });
     service.removeClient(messages);
     assert.equal(service.capabilities.stickerRows, false);
+});
+
+test("composition requires explicit connected Messages capability even when legacy rows are enabled", async () => {
+    const Service = serviceClass();
+    const service = Object.create(Service.prototype);
+    const writes = [];
+    const messages = { id: "messages", destroyed: false, write(data, callback) { writes.push(JSON.parse(data)); callback(); } };
+    const other = { id: "other", destroyed: false, write(data, callback) { writes.push({ other: true }); callback(); } };
+    service.clients = [messages, other]; service.activeClients = {}; service.log = { info() {}, debug() {} };
+    service.registerClient("com.apple.FaceTime", other, { stickerComposition: true });
+    for (const advertised of [undefined, false, "true", 1]) {
+        service.registerClient("com.apple.MobileSMS", messages, { stickerRows: true, stickerComposition: advertised });
+        assert.equal(service.capabilities.stickerComposition, false);
+        await service.writeData("send-sticker-row", { chatGuid: "chat", text: "a\uFFFC", stickers: [] });
+        assert.equal(writes.length, 0);
+    }
+    service.registerClient("com.apple.MobileSMS", messages, { stickerComposition: true });
+    assert.equal(service.capabilities.stickerRows, false);
+    await service.writeData("send-sticker-row", { chatGuid: "chat", text: "a\uFFFC", stickers: [] });
+    assert.equal(writes.length, 1); assert.equal(writes[0].data.text, "a\uFFFC");
+    service.removeClient(messages);
+    assert.equal(service.capabilities.stickerComposition, false);
+    await service.writeData("send-sticker-row", { chatGuid: "chat", text: "a\uFFFC", stickers: [] });
+    assert.equal(writes.length, 1);
 });
 
 test("placement and sticker tapback protocols require their own connected helper capabilities", async () => {
@@ -904,6 +1055,28 @@ test("native placement and tapback helper payloads omit temporary IDs and caller
     await api.removeStickerTapback({ ...target, reactionGuid: "reaction", filePath: "not-on-wire", transferGuid: "not-on-wire" });
     assert.deepEqual(writes, [{ action: "send-sticker-placement", data: { ...asset, placement } },
         { action: "send-sticker-tapback", data: asset }, { action: "remove-sticker-tapback", data: { ...target, reactionGuid: "reaction" } }]);
+});
+
+test("helper composition payload requires its own capability and preserves exact text in one row request", async () => {
+    const writes = [];
+    const capabilities = { stickerRows: true, stickerComposition: false };
+    class Action {
+        constructor(api) { this.api = api; }
+        throwForNoMissingFields() {}
+        async sendApiMessage(action, data) { writes.push({ action, data }); return { identifier: "sent" }; }
+    }
+    const { PrivateApiAttachment } = load("api/privateApi/apis/PrivateApiAttachment.ts", {
+        "@server": {}, ".": { PrivateApiAction: Action },
+        "@server/managers/transactionManager/transactionPromise": { TransactionPromise: class {}, TransactionType: { ATTACHMENT: 2 } }
+    });
+    const api = new PrivateApiAttachment({ capabilities });
+    const request = { chatGuid: "chat", text: " \n🙂\uFFFC\t ", stickers: [{ filePath: "/synthetic/staged.png", filename: "fixture.png" }] };
+    await assert.rejects(api.sendStickerRow(request), /not supported/);
+    assert.equal(writes.length, 0);
+    capabilities.stickerComposition = true; capabilities.stickerRows = false;
+    await assert.rejects(api.sendStickerRow({ ...request, text: "unmatched" }));
+    await api.sendStickerRow({ ...request, tempGuid: "not-on-wire" });
+    assert.deepEqual(writes, [{ action: "send-sticker-row", data: request }]);
 });
 
 test("native attempts block duplicates without evicting unknown outcomes", () => {
@@ -1088,12 +1261,16 @@ test("row send stages every asset before one dispatch and retains uncertain atte
     let rejection;
     const server = { privateApi: { capabilities: { stickerRows: false, stickerSending: true }, attachment: {
         async sendSticker() { ordinary++; throw new Error("No individual fallback"); },
-        async sendStickerRow({ chatGuid, stickers: prepared }) {
-            sends++; assert.equal(chatGuid, "chat"); assert.equal(prepared.length, 2);
+        async sendStickerRow({ chatGuid, stickers: prepared, text }) {
+            sends++; assert.equal(chatGuid, "chat"); assert.equal(prepared.length, resultRow.attachments.length);
             if (rejection) throw rejection;
-            assert.equal(prepared[0].filename, "fixture.png"); assert.equal(prepared[1].filename, "fixture.png");
+            assert.equal(prepared[0].filename, "fixture.png");
             assert.deepEqual(fs.readFileSync(prepared[0].filePath), png(64, 64));
-            assert.deepEqual(fs.readFileSync(prepared[1].filePath), png(32, 32));
+            if (prepared.length === 2) {
+                assert.equal(prepared[1].filename, "fixture.png");
+                assert.deepEqual(fs.readFileSync(prepared[1].filePath), png(32, 32));
+            }
+            if (text !== undefined) assert.equal(text, compositionFixture(prepared.length).attributedBody[0].string);
             resultRow.attachments.find(attachment => attachment.guid === "attachment-0").filePath = prepared[0].filePath;
             return { identifier: "row", data: { attachmentGuids: responseIds } };
         }
@@ -1144,6 +1321,39 @@ test("row send stages every asset before one dispatch and retains uncertain atte
             await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "bad-image", stickers: [request.stickers[0], { name: "fixture.png", attachmentPath: bad.files.attachment1.path }] }), /limits/);
             assert.equal(created.length, before); assert.equal(sends, 4); assert.equal(state.hasStickerAttempt("bad-image"), false);
         } finally { for (const file of bad.openedFiles) state.removeStickerUpload(file.path); }
+        rejection = undefined;
+        responseIds = ["attachment-0", "attachment-1"];
+        resultRow = compositionFixture();
+        resultRow.attributedBody[0].runs[3].attributes.__kIMMessagePartAttributeName = 3;
+        resultRow.attributedBody[0].runs.reverse();
+        const compositionRequest = { ...request, tempGuid: "composition", text: resultRow.attributedBody[0].string };
+        const before = created.length;
+        await assert.rejects(MessageInterface.sendStickerRow(compositionRequest), /not supported/);
+        assert.equal(created.length, before); assert.equal(sends, 4); assert.equal(state.hasStickerAttempt("composition"), false);
+        server.privateApi.capabilities.stickerRows = false;
+        server.privateApi.capabilities.stickerComposition = true;
+        const composed = await MessageInterface.sendStickerRow(compositionRequest);
+        assert.equal(sends, 5); assert.equal(ordinary, 0);
+        assert.equal(composed.verifiedStickerLayout, undefined);
+        assert.deepEqual(composed.verifiedStickerComposition, { attachmentGuids: responseIds,
+            parts: [{ range: [4, 1], partIndex: 0 }, { range: [7, 1], partIndex: 3 }] });
+        resultRow = { ...compositionFixture(), attributedBody: null };
+        await assert.rejects(MessageInterface.sendStickerRow({ ...compositionRequest, tempGuid: "composition-missing-body" }),
+            error => error.code === "confirmation_mismatch");
+        cached.clear();
+        await assert.rejects(MessageInterface.sendStickerRow({ ...compositionRequest, tempGuid: "composition-missing-body" }), /already queued/);
+        assert.equal(sends, 6); assert.equal(ordinary, 0);
+        resultRow = compositionFixture();
+        const concurrent = await Promise.allSettled([0, 1].map(() => MessageInterface.sendStickerRow({ ...compositionRequest, tempGuid: "composition-concurrent" })));
+        assert.equal(concurrent.filter(result => result.status === "fulfilled").length, 1);
+        assert.equal(concurrent.filter(result => result.status === "rejected").length, 1);
+        assert.equal(sends, 7); assert.equal(ordinary, 0);
+        resultRow = compositionFixture(1);
+        responseIds = ["attachment-0"];
+        const single = await MessageInterface.sendStickerRow({ ...compositionRequest, tempGuid: "composition-single",
+            text: resultRow.attributedBody[0].string, stickers: [request.stickers[0]] });
+        assert.deepEqual(single.verifiedStickerComposition.attachmentGuids, ["attachment-0"]);
+        assert.equal(sends, 8); assert.equal(ordinary, 0);
     } finally {
         for (const file of parsed.openedFiles) state.removeStickerUpload(file.path);
         for (const { filename, directory } of created) {

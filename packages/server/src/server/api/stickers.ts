@@ -4,11 +4,14 @@ import path from "path";
 
 export const MAX_STICKER_BYTES = 500 * 1024;
 export const MAX_STICKER_ROW_BYTES = 5 * 1024 * 1024;
-export const stickerMultipartLimits = { maxFileSize: MAX_STICKER_BYTES, maxFieldsSize: 8192, multiples: true };
+export const MAX_STICKER_FIELDS_BYTES = 8192;
+export const MAX_STICKER_COMPOSITION_UNITS = 4096;
+export const stickerMultipartLimits = { maxFileSize: MAX_STICKER_BYTES, maxFieldsSize: MAX_STICKER_FIELDS_BYTES, multiples: true };
 export const stickerRowMultipartLimits = { ...stickerMultipartLimits, maxFileSize: MAX_STICKER_ROW_BYTES };
 
 export type StickerDescriptor = { name: string; stickerLabel?: string };
 export type StickerLayout = { attachmentGuids: string[]; partIndex: 0 };
+export type StickerComposition = { attachmentGuids: string[]; parts: { range: [number, 1]; partIndex: number }[] };
 export type StickerPlacement = { x: number; y: number; scale: number; rotation: number; parentWidth: number };
 export type StickerAction = "placement" | "tapback" | "remove";
 export type StickerTarget = { selectedMessageGuid: string; partIndex: number };
@@ -123,14 +126,17 @@ export function validateStickerFields(body: Record<string, unknown>) {
 }
 
 export function parseStickerRowFields(body: Record<string, unknown>): StickerDescriptor[] {
-    if (!body || Object.keys(body).some(key => !["chatGuid", "tempGuid", "stickers"].includes(key)) ||
-        typeof body.stickers !== "string" || Buffer.byteLength(body.stickers, "utf8") > 8192) {
+    if (!body || Object.keys(body).some(key => !["chatGuid", "tempGuid", "stickers", "text"].includes(key)) ||
+        typeof body.stickers !== "string" || Object.values(body).some(value => typeof value !== "string") ||
+        Object.values(body).reduce<number>((total, value) => total + Buffer.byteLength(value as string, "utf8"), 0) > MAX_STICKER_FIELDS_BYTES) {
         throw new Error("Sticker rows require an ordered stickers JSON field.");
     }
     const descriptors = JSON.parse(body.stickers);
-    if (!Array.isArray(descriptors) || descriptors.length < 2 || descriptors.length > 10) {
-        throw new Error("A sticker row must contain 2 to 10 stickers.");
+    const composition = Object.prototype.hasOwnProperty.call(body, "text");
+    if (!Array.isArray(descriptors) || descriptors.length < (composition ? 1 : 2) || descriptors.length > 10) {
+        throw new Error("A sticker row requires 2 to 10 stickers, or 1 to 10 with composition text.");
     }
+    if (composition) validateStickerCompositionText(body.text, descriptors.length);
     for (const descriptor of descriptors) {
         if (!descriptor || Array.isArray(descriptor) || typeof descriptor !== "object" ||
             Object.keys(descriptor).some(key => !["name", "stickerLabel"].includes(key))) {
@@ -139,6 +145,19 @@ export function parseStickerRowFields(body: Record<string, unknown>): StickerDes
         validateStickerFields({ chatGuid: body.chatGuid, tempGuid: body.tempGuid, ...descriptor });
     }
     return descriptors;
+}
+
+export function validateStickerCompositionText(text: unknown, count: number): asserts text is string {
+    if (typeof text !== "string" || text.length > MAX_STICKER_COMPOSITION_UNITS ||
+        !Number.isInteger(count) || count < 1 || count > 10 || text.split("\uFFFC").length - 1 !== count)
+        throw new Error("Sticker composition requires bounded text with one reserved placeholder per sticker.");
+    for (let index = 0; index < text.length; index++) {
+        const unit = text.charCodeAt(index);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+            const next = text.charCodeAt(++index);
+            if (!(next >= 0xdc00 && next <= 0xdfff)) throw new Error("Sticker composition text must be well-formed UTF-16.");
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) throw new Error("Sticker composition text must be well-formed UTF-16.");
+    }
 }
 
 export function parseStickerActionFields(body: Record<string, unknown>, action: StickerAction): StickerTarget & {
@@ -386,7 +405,7 @@ export function getStickerLayout(message: any): StickerLayout | null {
     return { attachmentGuids: guids, partIndex: 0 };
 }
 
-export function matchesSentStickerBatch(message: any, guid: string, chatGuid: string, sentAt: number, count: number, filenames?: string[], expectedGuids?: string[]): boolean {
+function matchesSentStickerIdentity(message: any, guid: string, chatGuid: string, sentAt: number, count: number): boolean {
     return !!(
         message?.guid === guid &&
         message?.isFromMe === true &&
@@ -401,7 +420,12 @@ export function matchesSentStickerBatch(message: any, guid: string, chatGuid: st
         new Set(message.attachments.map((attachment: any) => attachment.guid)).size === count &&
         message.attachments.every((attachment: any) => attachment?.isSticker === true && !!attachment.guid &&
             !!attachment.stickerUserInfo && (attachment.stickerUserInfo.length > 0 ||
-            attachment.stickerUserInfo.byteLength > 0 || attachment.stickerUserInfo.size > 0)) &&
+            attachment.stickerUserInfo.byteLength > 0 || attachment.stickerUserInfo.size > 0))
+    );
+}
+
+export function matchesSentStickerBatch(message: any, guid: string, chatGuid: string, sentAt: number, count: number, filenames?: string[], expectedGuids?: string[]): boolean {
+    return !!(matchesSentStickerIdentity(message, guid, chatGuid, sentAt, count) &&
         (count === 1 || (Array.isArray(expectedGuids) && expectedGuids.length === count &&
             new Set(expectedGuids).size === count && expectedGuids.every(expected => typeof expected === "string" &&
                 message.attachments.some((attachment: any) => attachment.guid === expected)) &&
@@ -410,6 +434,40 @@ export function matchesSentStickerBatch(message: any, guid: string, chatGuid: st
                     (!filenames || !Object.prototype.hasOwnProperty.call(run.attributes, "__kIMFilenameAttributeName") ||
                         run.attributes.__kIMFilenameAttributeName === filenames[index]))))))
     );
+}
+
+export function matchesSentStickerComposition(message: any, guid: string, chatGuid: string, sentAt: number,
+    text: string, expectedGuids: string[], filenames: string[]): boolean {
+    const count = expectedGuids?.length;
+    try { validateStickerCompositionText(text, count); } catch { return false; }
+    if (!Array.isArray(expectedGuids) || !matchesSentStickerIdentity(message, guid, chatGuid, sentAt, count) ||
+        !Array.isArray(filenames) || filenames.length !== count ||
+        new Set(expectedGuids).size !== count || expectedGuids.some(expected => typeof expected !== "string" ||
+            !expected || !message.attachments.some((attachment: any) => attachment.guid === expected))) return false;
+    const bodies = message.attributedBody;
+    if (!Array.isArray(bodies) || bodies.length !== 1 || bodies[0]?.string !== text || !Array.isArray(bodies[0]?.runs) ||
+        bodies[0].runs.length < 1 || bodies[0].runs.length > text.length) return false;
+    const runs = [...bodies[0].runs].sort((left, right) => (left?.range?.[0] ?? -1) - (right?.range?.[0] ?? -1));
+    let offset = 0;
+    let ordinal = 0;
+    for (const run of runs) {
+        const range = run?.range;
+        const attrs = run?.attributes;
+        if (!Array.isArray(range) || range.length !== 2 || !Number.isInteger(range[0]) || range[0] !== offset ||
+            !Number.isInteger(range[1]) || range[1] < 1 || range[1] > text.length - offset || !attrs || typeof attrs !== "object" || Array.isArray(attrs)) return false;
+        if (!Number.isInteger(attrs.__kIMMessagePartAttributeName) || attrs.__kIMMessagePartAttributeName < 0 ||
+            attrs.__kIMMessagePartAttributeName > 2147483647) return false;
+        const content = text.slice(offset, offset + range[1]);
+        if (Object.prototype.hasOwnProperty.call(attrs, "__kIMFileTransferGUIDAttributeName")) {
+            if (content !== "\uFFFC" || attrs.__kIMFileTransferGUIDAttributeName !== expectedGuids[ordinal] ||
+                attrs.__kIMEmojiImageAttributeName !== 1 ||
+                (Object.prototype.hasOwnProperty.call(attrs, "__kIMFilenameAttributeName") &&
+                    attrs.__kIMFilenameAttributeName !== filenames[ordinal])) return false;
+            ordinal++;
+        } else if (content.includes("\uFFFC")) return false;
+        offset += range[1];
+    }
+    return offset === text.length && ordinal === count;
 }
 
 export function matchesSentStickerAction(message: any, guid: string, chatGuid: string, sentAt: number,

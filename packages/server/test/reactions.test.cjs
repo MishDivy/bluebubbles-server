@@ -202,7 +202,7 @@ test("real helper ping, registration and disconnection gate the Messages capabil
     await handler.handle({ process: "com.apple.MobileSMS", capabilities: { customEmojiReactions: "true" } }, messages);
     assert.equal(service.capabilities.customEmojiReactions, false);
     await handler.handle({ process: "com.apple.MobileSMS", capabilities: { customEmojiReactions: true } }, messages);
-    assert.deepEqual(service.capabilities, { customEmojiReactions: true, stickerSending: false, stickerPlacement: false, stickerRows: false, stickerReactions: false });
+    assert.deepEqual(service.capabilities, { customEmojiReactions: true, stickerSending: false, stickerPlacement: false, stickerRows: false, stickerComposition: false, stickerReactions: false });
     service.addClient(facetime);
     await handler.handle({ process: "com.apple.FaceTime", capabilities: { customEmojiReactions: true } }, facetime);
     service.removeClient(messages);

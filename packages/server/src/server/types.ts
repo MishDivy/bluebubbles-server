@@ -1,6 +1,6 @@
 import { NSAttributedString } from "node-typedstream";
 import type { StickerMetadata } from "@server/api/stickerMetadata";
-import type { StickerLayout } from "@server/api/stickers";
+import type { StickerComposition, StickerLayout } from "@server/api/stickers";
 
 export type ServerMetadataResponse = {
     computer_id: string;
@@ -13,6 +13,7 @@ export type ServerMetadataResponse = {
         stickerSending: boolean;
         stickerPlacement: boolean;
         stickerRows: boolean;
+        stickerComposition: boolean;
         stickerReactions: boolean;
     };
     proxy_service: string;
@@ -38,6 +39,7 @@ export type MessageResponse = {
     text: string;
     attributedBody?: NSAttributedString[];
     stickerLayout?: StickerLayout;
+    stickerComposition?: StickerComposition;
     messageSummaryInfo?: NodeJS.Dict<any>[];
     handle?: HandleResponse | null;
     handleId: number;

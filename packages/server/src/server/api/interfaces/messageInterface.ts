@@ -35,6 +35,8 @@ import {
     reserveStickerAttempt,
     hasStickerAttempt,
     matchesSentStickerBatch,
+    matchesSentStickerComposition,
+    stickerBodyRuns,
     parseStickerRowFields,
     MAX_STICKER_ROW_BYTES,
     parseStickerActionFields,
@@ -66,13 +68,15 @@ export class MessageInterface {
         return MessageInterface.sendStickerBatch(chatGuid, tempGuid, [{ attachmentPath, name, stickerLabel }]);
     }
 
-    static async sendStickerRow({ chatGuid, tempGuid, stickers }: {
+    static async sendStickerRow({ chatGuid, tempGuid, stickers, text }: {
         chatGuid: string;
         tempGuid: string;
         stickers: { attachmentPath: string; name: string; stickerLabel?: string }[];
+        text?: string;
     }): Promise<Message> {
-        parseStickerRowFields({ chatGuid, tempGuid, stickers: JSON.stringify(stickers.map(({ name, stickerLabel }) => ({ name, stickerLabel }))) });
-        return MessageInterface.sendStickerBatch(chatGuid, tempGuid, stickers);
+        parseStickerRowFields({ chatGuid, tempGuid, stickers: JSON.stringify(stickers.map(({ name, stickerLabel }) => ({ name, stickerLabel }))),
+            ...(text !== undefined ? { text } : {}) });
+        return MessageInterface.sendStickerBatch(chatGuid, tempGuid, stickers, undefined, text);
     }
 
     static async sendStickerAction(action: "placement" | "tapback", request: StickerTarget & {
@@ -132,11 +136,12 @@ export class MessageInterface {
 
     private static async sendStickerBatch(chatGuid: string, tempGuid: string,
         stickers: { attachmentPath: string; name: string; stickerLabel?: string }[],
-        target?: StickerTarget & { action: "placement" | "tapback"; placement?: StickerPlacement }): Promise<Message> {
+        target?: StickerTarget & { action: "placement" | "tapback"; placement?: StickerPlacement }, text?: string): Promise<Message> {
         checkPrivateApiStatus();
-        const rowSend = stickers.length > 1;
+        const composition = text !== undefined;
+        const rowSend = stickers.length > 1 || composition;
         const capability = target ? (target.action === "placement" ? "stickerPlacement" : "stickerReactions")
-            : rowSend ? "stickerRows" : "stickerSending";
+            : composition ? "stickerComposition" : rowSend ? "stickerRows" : "stickerSending";
         if (!Server().privateApi.capabilities[capability])
             throw new Error("Native sticker sending is not supported by the connected Messages helper.");
         const [chats] = await Server().iMessageRepo.getChats({
@@ -195,7 +200,7 @@ export class MessageInterface {
                     chatGuid, ...prepared[0], selectedMessageGuid: target.selectedMessageGuid,
                     partIndex: target.partIndex, ...(target.action === "placement" ? { placement: target.placement } : {})
                 }) : rowSend
-                ? await Server().privateApi.attachment.sendStickerRow({ chatGuid, stickers: prepared })
+                ? await Server().privateApi.attachment.sendStickerRow({ chatGuid, stickers: prepared, ...(composition ? { text } : {}) })
                 : await Server().privateApi.attachment.sendSticker({ chatGuid, ...prepared[0] });
         } catch (error) {
             throw new StickerUnconfirmedError("Sticker send outcome is unknown. Check the chat before sending again.", stickerHelperFailureCode(error));
@@ -211,6 +216,7 @@ export class MessageInterface {
         let message: Message;
         const matches = (row: Message) => target
             ? matchesSentStickerAction(row, result.identifier, chatGuid, sentAt, target.action, target)
+            : composition ? matchesSentStickerComposition(row, result.identifier, chatGuid, sentAt, text, expectedGuids, stickers.map(sticker => sticker.name))
             : matchesSentStickerBatch(row, result.identifier, chatGuid, sentAt, stickers.length, stickers.map(sticker => sticker.name), expectedGuids);
         let sawRow = false;
         try {
@@ -229,7 +235,11 @@ export class MessageInterface {
             throw new StickerUnconfirmedError("Sticker send was not confirmed. Check the chat before sending again.",
                 sawRow ? "confirmation_mismatch" : "confirmation_missing");
         }
-        if (rowSend) message.verifiedStickerLayout = { attachmentGuids: [...expectedGuids], partIndex: 0 };
+        if (rowSend && !composition) message.verifiedStickerLayout = { attachmentGuids: [...expectedGuids], partIndex: 0 };
+        if (composition) message.verifiedStickerComposition = {
+            attachmentGuids: [...expectedGuids],
+            parts: stickerBodyRuns(message).map(run => ({ range: [run.range[0], 1], partIndex: run.attributes.__kIMMessagePartAttributeName }))
+        };
         cleanupPrepared(message);
         return message;
     }

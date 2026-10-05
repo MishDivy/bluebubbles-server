@@ -23,6 +23,7 @@ export class GeneralInterface {
                 stickerSending: false,
                 stickerPlacement: false,
                 stickerRows: false,
+                stickerComposition: false,
                 stickerReactions: false
             },
             detected_icloud: await FileSystem.getIcloudAccount(),

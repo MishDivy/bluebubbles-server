@@ -66,7 +66,12 @@ function summarizeDecoded(decoded, linkedGuids) {
             .map(run => run.transferOrdinal));
         const fffcCount = body.string.split("\uFFFC").length - 1;
         const fffcOnly = body.string.length > 0 && fffcCount === body.string.length;
-        return { length: body.string.length, fffcCount, fffcOnly, runs, perCharacterTransferOrdinals,
+        const markerOffsets = [], newlineOffsets = [];
+        for (let index = 0; index < body.string.length; index++) {
+            if (body.string[index] === "\uFFFC") markerOffsets.push(index);
+            if (body.string[index] === "\n" || body.string[index] === "\r") newlineOffsets.push(index);
+        }
+        return { length: body.string.length, fffcCount, fffcOnly, markerOffsets, newlineOffsets, runs, perCharacterTransferOrdinals,
             linkedOrderEqual: fffcOnly && body.string.length === linkedGuids.length &&
                 perCharacterTransferOrdinals.every((ordinals, index) => ordinals.length === 1 && ordinals[0] === index) };
     });

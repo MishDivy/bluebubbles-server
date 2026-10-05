@@ -62,11 +62,11 @@ export class MessageRouter {
     }
 
     static async sendStickerRow(ctx: RouterContext, _: Next) {
-        const { chatGuid, tempGuid } = ctx.request.body;
+        const { chatGuid, tempGuid, text } = ctx.request.body;
         let confirmed = false;
         try {
             const descriptors = parseStickerRowFields(ctx.request.body);
-            const message = await MessageInterface.sendStickerRow({ chatGuid, tempGuid, stickers: descriptors.map((descriptor, index) => ({
+            const message = await MessageInterface.sendStickerRow({ chatGuid, tempGuid, ...(text !== undefined ? { text } : {}), stickers: descriptors.map((descriptor, index) => ({
                 ...descriptor, attachmentPath: (ctx.request.files[`attachment${index}`] as File).path
             })) });
             confirmed = true;

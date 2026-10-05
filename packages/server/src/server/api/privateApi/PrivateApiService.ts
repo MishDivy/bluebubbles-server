@@ -69,6 +69,7 @@ export class PrivateApiService extends Loggable {
         stickerSending: boolean;
         stickerPlacement: boolean;
         stickerRows: boolean;
+        stickerComposition: boolean;
         stickerReactions: boolean;
     } {
         const messages = this.activeClients["com.apple.MobileSMS"];
@@ -78,6 +79,7 @@ export class PrivateApiService extends Loggable {
             stickerSending: connected && messages.capabilities?.stickerSending === true,
             stickerPlacement: connected && messages.capabilities?.stickerPlacement === true,
             stickerRows: connected && messages.capabilities?.stickerRows === true,
+            stickerComposition: connected && messages.capabilities?.stickerComposition === true,
             stickerReactions: connected && messages.capabilities?.stickerReactions === true
         };
     }
@@ -176,6 +178,7 @@ export class PrivateApiService extends Loggable {
             customEmojiReactions: capabilities?.customEmojiReactions === true,
             stickerSending: capabilities?.stickerSending === true,
             stickerRows: capabilities?.stickerRows === true,
+            stickerComposition: capabilities?.stickerComposition === true,
             stickerPlacement: capabilities?.stickerPlacement === true,
             stickerReactions: capabilities?.stickerReactions === true
         };
@@ -359,7 +362,8 @@ export class PrivateApiService extends Loggable {
                 const isEmojiReaction = action === "send-reaction" && ["emoji", "-emoji"].includes(data.reactionType);
                 const write =
                     Object.prototype.hasOwnProperty.call(stickerActions, action)
-                        ? this.writeSticker(`${JSON.stringify(d)}\n`, stickerActions[action as keyof typeof stickerActions])
+                        ? this.writeSticker(`${JSON.stringify(d)}\n`, action === "send-sticker-row" && Object.prototype.hasOwnProperty.call(data, "text")
+                            ? "stickerComposition" : stickerActions[action as keyof typeof stickerActions])
                         : isEmojiReaction
                         ? this.writeEmojiReaction(`${JSON.stringify(d)}\n`)
                         : this.writeToClients(`${JSON.stringify(d)}\n`);
@@ -409,7 +413,7 @@ export class PrivateApiService extends Loggable {
         }
     }
 
-    private async writeSticker(data: string, capability: typeof stickerActions[keyof typeof stickerActions] = "stickerSending"): Promise<boolean> {
+    private async writeSticker(data: string, capability: typeof stickerActions[keyof typeof stickerActions] | "stickerComposition" = "stickerSending"): Promise<boolean> {
         if (!this.capabilities[capability]) return false;
         try {
             await this.writeToClient(this.activeClients["com.apple.MobileSMS"], data);

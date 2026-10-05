@@ -166,7 +166,8 @@ export class MessageSerializer {
             hasPayloadData: !!message.payloadData
         };
 
-        const stickerLayout = getStickerLayout(message) ?? message.verifiedStickerLayout;
+        const stickerLayout = message.verifiedStickerComposition ? null : getStickerLayout(message) ?? message.verifiedStickerLayout;
+        if (message.verifiedStickerComposition) output.stickerComposition = message.verifiedStickerComposition;
         if (stickerLayout) {
             output.stickerLayout = stickerLayout;
             for (const attachment of output.attachments) {

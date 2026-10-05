@@ -52,6 +52,16 @@ test("inspector distinguishes mixed text, reordered/unlinked GUIDs, overlap and 
     assert.equal(summarizeDecoded([body(ids), body(ids)], ids).bodyCount, 2);
 });
 
+test("inspector reports UTF-16 marker and newline positions without text", () => {
+    const text = "private-😀\uFFFC\r\nend\uFFFC";
+    const summary = summarizeDecoded([new NSAttributedString(text, [])], []).bodies[0];
+    assert.deepEqual(summary.markerOffsets, [10, 16]);
+    assert.deepEqual(summary.newlineOffsets, [11, 12]);
+    assert.equal(JSON.stringify(summary).includes("private"), false);
+    const wrapped = summarizeDecoded([new NSAttributedString("x\uFFFC same line", [])], []).bodies[0];
+    assert.deepEqual(wrapped.newlineOffsets, []);
+});
+
 test("inspector rejects oversized or noncanonical inputs and decoded summary bounds", () => {
     const input = { attributedBody: Buffer.from("not an archive").toString("base64"), attachmentGuids: ["first"] };
     assert.deepEqual(validateInput(input), Buffer.from("not an archive"));
