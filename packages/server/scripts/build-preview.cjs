@@ -6,7 +6,7 @@ const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
 const helperRevision = "0a9072f1172bc46f1a33a2bc58b8df05cd8e81ef";
-const nativeStickerHelperRevision = "f06b2d33dc106d2a0bc441225481a9dc43cd2b90";
+const nativeStickerHelperRevision = "024e9402284c64055d5fdbdbaa030b7473a0d7f7";
 const productName = "BlueBubbles Preview";
 const bundleId = "com.mishdivy.bluebubbles-preview";
 const hash = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");

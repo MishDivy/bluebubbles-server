@@ -78,10 +78,16 @@ test("helper failure codes accept only exact fixed string rejections", () => {
         ["Current own sticker reaction is unavailable or changed", "helper_reaction_changed"],
         ["Native sticker target lookup timed out", "helper_target_timeout"],
         ["Sticker dispatch outcome is unknown; do not retry", "helper_dispatch_unknown"],
+        ["Sticker registration outcome is unknown; do not retry", "helper_registration_unknown"],
+        ["Sticker send outcome is unknown; do not retry", "helper_send_unknown"],
+        ["Sticker message identifier is unavailable after dispatch; do not retry", "helper_identifier_unavailable"],
+        ["Sticker message identifier lookup failed after dispatch; do not retry", "helper_identifier_lookup_failed"],
         ["Transaction timeout", "helper_timeout"]
     ]) assert.equal(stickers.stickerHelperFailureCode(reason), code);
     for (const error of [null, undefined, 123, "constructor", "toString", "__proto__",
         "Unable to construct native sticker message private suffix", "Invalid or inaccessible sticker image\n",
+        "Sticker send outcome is unknown; do not retry private suffix",
+        new Error("Sticker message identifier lookup failed after dispatch; do not retry"),
         new Error("Unable to construct native sticker message"), { message: "Transaction timeout" },
         { toString() { throw new Error("Must not stringify private payloads"); } }]) {
         assert.equal(stickers.stickerHelperFailureCode(error), "helper_unknown");
@@ -333,6 +339,29 @@ test("row confirmation checks constructed transfer order even with duplicate fil
     const overlapping = rowFixture(); overlapping.attributedBody[0].runs[1].range = [0, 1];
     const multipleBodies = rowFixture(); multipleBodies.attributedBody.push({ string: "text", runs: [] });
     for (const invalid of [mixed, extraRun, overlapping, multipleBodies]) assert.equal(stickers.getStickerLayout(invalid), null);
+});
+
+test("a normally returned post-dispatch identifier confirms only its exact sent row and ordered transfers", () => {
+    const constructed = "11111111-1111-4111-8111-111111111111";
+    const returned = "22222222-2222-4222-8222-222222222222";
+    const row = rowFixture();
+    row.guid = returned;
+    const ids = ["attachment-0", "attachment-1"];
+    const check = (message, guid = returned, expected = ids) =>
+        stickers.matchesSentStickerBatch(message, guid, "chat", Date.now() - 1000, 2,
+            ["fixture.png", "fixture.png"], expected);
+    assert.equal(check(row), true);
+    assert.equal(check(row, constructed), false);
+    assert.equal(check({ ...row, guid: constructed }), false);
+    assert.equal(check({ ...row, chats: [{ guid: "other", serviceName: "iMessage" }] }), false);
+    assert.equal(check(row, returned, ids.slice().reverse()), false);
+    assert.equal(check(row, returned, ["attachment-0", "unrelated"]), false);
+    const wrongTransfer = rowFixture();
+    wrongTransfer.guid = returned;
+    wrongTransfer.attributedBody[0].runs[1].attributes.__kIMFileTransferGUIDAttributeName = "unrelated";
+    assert.equal(check(wrongTransfer), false);
+    const unsent = { ...row, isSent: false };
+    assert.equal(check(unsent), false);
 });
 
 test("row upload validator rejects oversized individual files, extras and repeated indexes", async () => {
