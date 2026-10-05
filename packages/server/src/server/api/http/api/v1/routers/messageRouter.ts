@@ -76,7 +76,7 @@ export class MessageRouter {
         } catch (error) {
             if (confirmed || error instanceof StickerUnconfirmedError)
                 throw MessageRouter.stickerFailure(error, confirmed, "Sticker row send not confirmed");
-            throw new BadRequest({ error: "Native sticker row request rejected. Verify capability, iMessage chat and upload bounds." });
+            throw new BadRequest({ error: "Native sticker row request rejected. Verify static PNG input, capability, iMessage chat and upload bounds." });
         }
     }
 

@@ -38,6 +38,7 @@ import {
     matchesSentStickerComposition,
     stickerBodyRuns,
     parseStickerRowFields,
+    validateInlineStickerBytes,
     MAX_STICKER_ROW_BYTES,
     parseStickerActionFields,
     validateStickerTarget,
@@ -154,6 +155,7 @@ export class MessageInterface {
         }
         if (target) validateStickerTarget(await Server().iMessageRepo.getMessage(target.selectedMessageGuid, true, true), chatGuid, target);
         const sources = stickers.map(sticker => readStickerUpload(sticker.attachmentPath, sticker.name));
+        if (rowSend) sources.forEach((bytes, index) => validateInlineStickerBytes(bytes, stickers[index].name));
         if (sources.reduce((total, bytes) => total + bytes.length, 0) > MAX_STICKER_ROW_BYTES) throw new Error("Sticker row exceeds 5 MiB.");
         if (Server().httpService.sendCache.find(tempGuid) || hasStickerAttempt(tempGuid))
             throw new Error("This temporary GUID is already queued.");

@@ -36,6 +36,14 @@ The same row endpoint and helper event accept optional `text` for an ordered com
 
 Composition requires the separate `privateApiCapabilities.stickerComposition` explicitly advertised by the connected Messages helper. An old, missing, false or disconnected capability rejects before staging/dispatch, even when ordinary sticker rows are enabled. This server change does not enable or pin a new helper. Native glyph preparation and mixed-body part semantics remain acceptance gates; ordinary PNG decoding alone does not establish adaptive-glyph compatibility. The server does not re-encode artwork or guess preview-generation state.
 
+The current inline preparation candidate accepts static PNG only for rows and
+compositions. Preflight rejects APNG (including one-frame animation containers),
+GIF and JPEG before copying sources or reserving a send attempt. PNG chunk
+inspection uses bounded chunk lengths, not a search for text inside compressed
+data. Original standalone, placement and tapback image validation stays unchanged.
+Native image decoding and exact derived-image verification remain helper gates.
+This restriction does not claim that Apple cannot support other inline formats.
+
 Mixed confirmation requires the exact sent message identity and linked sticker metadata, plus one complete attributed body whose string exactly equals the submitted `text`. Every bounded run must cover its own contiguous UTF-16 range and carry a nonnegative integer native part; each marker must occupy a one-unit transfer run with the expected ordered GUID and emoji-image marker. Filename attributes remain optional and must match when present. Missing body data, gaps, overlaps, extra transfers and reordered identities are uncertain outcomes, with the same HTTP 500/no-retry policy. Native fixture validation must establish the actual part mapping before enabling the capability; the integer guard is not a claim that all mixed stickers use part 0.
 
 Only positively confirmed composition responses include `stickerComposition: {attachmentGuids, parts: [{range: [offset, 1], partIndex}]}`. The ordered IDs and parts come from the confirmed body, independently of database attachment-row order. Exact text remains in `attributedBody[0].string`, without a duplicated field. This response-only hint has no database column or history classifier and does not stamp mixed attachments with pure-row part-0 metadata. Existing pure-row classification stays unchanged.

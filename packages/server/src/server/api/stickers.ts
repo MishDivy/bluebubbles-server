@@ -52,6 +52,13 @@ const stickerHelperErrors = {
     "Unable to snapshot sticker image": "helper_snapshot_failed",
     "Unable to prepare native sticker transfer": "helper_transfer_failed",
     "Unable to construct native sticker message": "helper_message_failed",
+    "Native inline sticker preparation is unavailable": "helper_inline_unavailable",
+    "Native sticker composition is unavailable": "helper_composition_unavailable",
+    "Animated stickers cannot be sent inline": "helper_inline_animation_unsupported",
+    "Inline stickers require static PNG images": "helper_inline_format_unsupported",
+    "Inline sticker images exceed the decoded pixel limit": "helper_inline_limits",
+    "Unable to prepare native inline sticker image": "helper_inline_preparation_failed",
+    "Invalid sticker body mapping": "helper_request_invalid",
     "Unable to construct native sticker placement": "helper_placement_failed",
     "Unable to construct native sticker reaction": "helper_reaction_failed",
     "Native sticker preparation failed": "helper_preparation_failed",
@@ -226,6 +233,8 @@ export function inspectStickerBytes(bytes: Buffer, filename: string) {
     let width = 0;
     let height = 0;
     let frames = 1;
+    let animated = false;
+    let animatedFrameData = false;
     let format: string;
     if (bytes.length >= 33 && bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) {
         format = "png";
@@ -234,7 +243,6 @@ export function inspectStickerBytes(bytes: Buffer, filename: string) {
         width = bytes.readUInt32BE(16);
         height = bytes.readUInt32BE(20);
         let controls = 0;
-        let animated = false;
         let ended = false;
         for (let offset = 8; offset + 12 <= bytes.length; ) {
             const length = bytes.readUInt32BE(offset);
@@ -246,6 +254,7 @@ export function inspectStickerBytes(bytes: Buffer, filename: string) {
                 frames = bytes.readUInt32BE(offset + 8);
             }
             if (type === "fcTL") controls++;
+            if (type === "fdAT") animatedFrameData = true;
             offset += length + 12;
             if (type === "IEND") {
                 ended = length === 0 && offset === bytes.length;
@@ -326,7 +335,13 @@ export function inspectStickerBytes(bytes: Buffer, filename: string) {
     ) {
         throw new Error("Sticker exceeds image dimensions, frame count or decoded pixel limits.");
     }
-    return { width, height, frames, format };
+    return { width, height, frames, format, animated: animated || animatedFrameData || frames > 1 };
+}
+
+export function validateInlineStickerBytes(bytes: Buffer, filename: string) {
+    const image = inspectStickerBytes(bytes, filename);
+    if (image.format !== "png" || image.animated)
+        throw new Error("Inline sticker rows and text currently require static PNG images.");
 }
 
 export function readStickerUpload(filePath: string, filename: string): Buffer {

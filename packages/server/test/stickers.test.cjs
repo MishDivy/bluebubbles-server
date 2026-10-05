@@ -66,6 +66,13 @@ test("helper failure codes accept only exact fixed string rejections", () => {
     for (const [reason, code] of [
         ["Invalid or inaccessible sticker image", "helper_image_invalid"],
         ["Unable to construct native sticker message", "helper_message_failed"],
+        ["Native inline sticker preparation is unavailable", "helper_inline_unavailable"],
+        ["Native sticker composition is unavailable", "helper_composition_unavailable"],
+        ["Animated stickers cannot be sent inline", "helper_inline_animation_unsupported"],
+        ["Inline stickers require static PNG images", "helper_inline_format_unsupported"],
+        ["Inline sticker images exceed the decoded pixel limit", "helper_inline_limits"],
+        ["Unable to prepare native inline sticker image", "helper_inline_preparation_failed"],
+        ["Invalid sticker body mapping", "helper_request_invalid"],
         ["Unable to construct native sticker placement", "helper_placement_failed"],
         ["Unable to construct native sticker reaction", "helper_reaction_failed"],
         ["Current own sticker reaction is unavailable or changed", "helper_reaction_changed"],
@@ -705,7 +712,8 @@ test("bounded image inspection rejects oversized, malformed and incompatible ima
         width: 64,
         height: 64,
         frames: 1,
-        format: "png"
+        format: "png",
+        animated: false
     });
     assert.equal(stickers.inspectStickerBytes(png(64, 64, 2), "fixture.apng").frames, 2);
     const gif = Buffer.from("47494638396101000100800000000000ffffff2c00000000010001000002024401003b", "hex");
@@ -723,6 +731,29 @@ test("bounded image inspection rejects oversized, malformed and incompatible ima
         [Buffer.from("not an image"), "fixture.png"]
     ]) {
         assert.throws(() => stickers.inspectStickerBytes(bytes, name));
+    }
+});
+
+test("inline preflight accepts static PNG only without altering standalone animation support", () => {
+    const staticPng = png();
+    assert.doesNotThrow(() => stickers.validateInlineStickerBytes(staticPng, "fixture.png"));
+    const textChunk = chunk("tEXt", Buffer.from("note\0acTL is text, not an animation chunk"));
+    const withText = Buffer.concat([staticPng.subarray(0, 33), textChunk, staticPng.subarray(33)]);
+    assert.doesNotThrow(() => stickers.validateInlineStickerBytes(withText, "fixture.png"));
+    const animation = Buffer.alloc(8); animation.writeUInt32BE(1);
+    const singleFrameApng = Buffer.concat([staticPng.subarray(0, 33), chunk("acTL", animation),
+        chunk("fcTL", Buffer.alloc(26)), staticPng.subarray(33)]);
+    assert.equal(stickers.inspectStickerBytes(singleFrameApng, "one.png").animated, true);
+    const orphanFrame = Buffer.concat([staticPng.subarray(0, 33), chunk("fdAT", Buffer.alloc(4)), staticPng.subarray(33)]);
+    assert.throws(() => stickers.validateInlineStickerBytes(orphanFrame, "orphan.png"), /require static PNG/);
+    const orphanControl = Buffer.concat([staticPng.subarray(0, 33), chunk("fcTL", Buffer.alloc(26)), staticPng.subarray(33)]);
+    assert.throws(() => stickers.validateInlineStickerBytes(orphanControl, "orphan.png"));
+    const gif = Buffer.from("47494638396101000100800000000000ffffff2c00000000010001000002024401003b", "hex");
+    const jpeg = Buffer.from("ffd8ffc00011080001000103012200021101031101ffd9", "hex");
+    for (const [bytes, name] of [[singleFrameApng, "one.png"], [png(64, 64, 2), "two.png"],
+        [gif, "one.gif"], [jpeg, "one.jpg"]]) {
+        assert.doesNotThrow(() => stickers.inspectStickerBytes(bytes, name));
+        assert.throws(() => stickers.validateInlineStickerBytes(bytes, name), /require static PNG/);
     }
 });
 
@@ -1332,6 +1363,24 @@ test("row send stages every asset before one dispatch and retains uncertain atte
         assert.equal(created.length, before); assert.equal(sends, 4); assert.equal(state.hasStickerAttempt("composition"), false);
         server.privateApi.capabilities.stickerRows = false;
         server.privateApi.capabilities.stickerComposition = true;
+        const animatedUpload = await parseMultipart([["attachment0", png(32, 32, 2)]]);
+        try {
+            const beforeUnsupported = created.length;
+            await assert.rejects(MessageInterface.sendStickerRow({ ...compositionRequest, tempGuid: "animated-composition",
+                text: "\uFFFC text", stickers: [{ name: "fixture.png", attachmentPath: animatedUpload.files.attachment0.path }] }),
+                /require static PNG/);
+            assert.equal(created.length, beforeUnsupported);
+            assert.equal(sends, 4);
+            assert.equal(state.hasStickerAttempt("animated-composition"), false);
+            server.privateApi.capabilities.stickerRows = true;
+            await assert.rejects(MessageInterface.sendStickerRow({ ...request, tempGuid: "animated-row",
+                stickers: [request.stickers[0], { name: "fixture.png", attachmentPath: animatedUpload.files.attachment0.path }] }),
+                /require static PNG/);
+            assert.equal(created.length, beforeUnsupported);
+            assert.equal(sends, 4);
+            assert.equal(state.hasStickerAttempt("animated-row"), false);
+            server.privateApi.capabilities.stickerRows = false;
+        } finally { for (const file of animatedUpload.openedFiles) state.removeStickerUpload(file.path); }
         const composed = await MessageInterface.sendStickerRow(compositionRequest);
         assert.equal(sends, 5); assert.equal(ordinary, 0);
         assert.equal(composed.verifiedStickerLayout, undefined);
